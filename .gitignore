@@ -1,0 +1,7 @@
+# Secrets — never commit
+HF_Access_Token.txt
+*.env
+.env.*
+
+# Local session memory data (Remember plugin)
+.remember/

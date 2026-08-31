@@ -1,325 +1,413 @@
-# FedICL-MQA — Pilot thu nhỏ: kiểm tra tính khả thi ICL centralized → federated
+# FedICL-MQA — Pilot: vertical slice MedMCQA non-IID
 
-Status: Approved design (rev 3), sẵn sàng cho implementation plan
-Date: 2026-08-29 (rev 3)
-Liên quan: [fedicl_mqa_paper_core_sections.md](../../fedicl_mqa_paper_core_sections.md) (design full-scale gốc)
+Status: Approved design (rev 5), sẵn sàng cho implementation plan
+Date: 2026-08-31 (rev 5)
+Liên quan: [fedicl_mqa_paper_core_sections.md](../../fedicl_mqa_paper_core_sections.md) (full-scale design, rev 2)
 
-Rev 3 vá 10 lỗ hổng còn lại sau rev 2: DAG tạo artifact chưa có thứ tự duy nhất (candidate/demo mâu thuẫn), retrieval chưa định nghĩa closure constraint (kể cả retriever thấy gold label), client-size bị hard-code, evaluator denominator có thể bị thổi phồng, non-inferiority tự nhận "confirmatory" nhưng không đủ chuẩn, estimand Central–FL mô tả sai (bỏ qua local optimizer steps), thiếu feasibility/systems metrics, compute gate đánh giá thấp workload, operational gate quá mỏng, và git metadata bị stale. Sau rev này, các hạn chế còn lại của thiết kế (3 client IID, 3 training seed, BioBERT circularity, khác biệt với full-scale) được coi là đã giới hạn đúng bằng khung exploratory — không còn là blocker cho implementation plan.
+Rev 5 đổi mục đích của pilot. Rev 1–4 xây một feasibility study về demo-conditioned SFT (centralized vs federated) trên MedQA + MedQuAD, IID 3 client, tới rev 4 là 8 arm / 196 configuration. Vấn đề: **pilot đó không chạm tới cơ chế mang novelty của bài** — full-scale rev 2 đặt đóng góp chính ở client-aware federated retrieval prior (`w_{i,c}` leave-one-client-out), mà rev 4 hoàn toàn không có `γ`, không có `w`. Pilot đang de-risk phần an toàn.
 
-## 1. Mục tiêu
+Rev 5 vì vậy thu pilot thành **một vertical slice dọc theo đúng code path của full-scale**: một model, một dataset (MedMCQA), partition non-IID skew 5 client, và một tập arm tối thiểu có chạm ladder A (§3). Toàn bộ protocol machinery của rev 3/rev 4 được giữ nguyên vì nó độc lập với arm matrix: artifact DAG có thứ tự duy nhất (§5), closure-constrained retrieval (§6), matched-compute contract (§8), FL contract (§11), operational gate (§12.1). Thứ bị bỏ là **phạm vi**, không phải **kỷ luật**.
 
-Kiểm tra tính khả thi của bài toán ICL (in-context learning) xuyên suốt pipeline từ centralized đến federated learning, dùng model cực nhỏ (≤1B) và quy mô dữ liệu nhỏ, **trước khi** đầu tư compute lớn cho full-scale paper (Qwen2.5-3B, MedMCQA 5-client, 120 GPU-giờ đã note trong nghiên cứu trước).
+Bị loại khỏi pilot ở rev 5: MedQuAD và toàn bộ constructed-4-way-MCQ, model thứ hai (SmolLM2), trục eval-k, arm random-k5, arm local-only-k0, và 8-arm crossed matrix. Những thứ này không mất — arm random và local-only đã trở thành mục 1 và mục 5 của ladder full-scale (§6.1 của doc kia), nên chạy chúng ở pilot là chạy hai lần.
 
-Đây là feasibility pilot (architectural scope), không phải bản thu nhỏ 1:1 của full-scale design. Một số quyết định phương pháp luận khác với `fedicl_mqa_paper_core_sections.md` — được ghi chú rõ ở từng mục.
+## 1. Mục tiêu — ba câu hỏi feasibility
+
+Pilot này **không ước lượng effect size**. Nó trả lời ba câu hỏi, theo thứ tự quan trọng:
+
+**F1 — Code path có chạy end-to-end không?** `partition non-IID → client validation stats (a_{j,c}, n_{j,c}) → prior LOO → closure-constrained retrieval có prior → FedAvg-LoRA → conditional-likelihood eval`. Đây là đúng chuỗi của full-scale, không phải một xấp xỉ.
+
+**F2 — Prior LOO có ước lượng được không?** Đây là câu hỏi quan trọng nhất và là lý do pilot tồn tại. Full-scale §5.2 yêu cầu design check `min_{i,c: n_{i,c}>0} Σ_{j≠i} n_{j,c} ≥ n_min`. Nếu check này trượt trên phần lớn cặp `(i,c)` dưới một partition skew thực tế, thì `w_{i,c}` không xác định được ở đúng những subject mà client quan tâm nhất — và **contribution 2 của paper không triển khai được**. Cần biết điều này trong một tuần, không phải ở tháng thứ ba.
+
+**F3 — Chi phí thật mỗi round là bao nhiêu?** Wall-clock, VRAM, adapter bytes/round, cộng payload của kênh thống kê `(a_{j,c}, n_{j,c})` — để size ngân sách 120 GPU-giờ của full-scale.
+
+Không có câu hỏi F nào cần 3+ seed hay CI hẹp. Kết luận của pilot là **operational**, không phải scientific (§12).
 
 ## 2. Hạ tầng & phạm vi
 
 - Compute: Cloud GPU A5000 (đã cấp phát), tách riêng khỏi ngân sách 120 GPU-giờ của full-scale.
-- 2 model: **Qwen2.5-0.5B-Instruct** và **SmolLM2-360M-Instruct**.
-- 2 dataset: **MedQA-USMLE** (trắc nghiệm, official splits) và **MedQuAD** (tự luận → constructed 4-way MCQ, mục 9).
-- Thiết kế: **crossed model × dataset matrix trên 5 arm chính, với số seed riêng theo từng arm** — không dùng khung "full factorial × N seed".
-- Ngoài 5 arm chính có 2 **diagnostic run** phạm vi hẹp (mục 3), không nằm trong crossed matrix.
-- **46 là số experiment configuration, không phải tổng workload** — chưa tính tuning search, calibration/audit pass, retry, và pass eval thứ hai (conditional-likelihood scoring chạy riêng cho mọi arm đã train). Trình tự ước tính compute thật xem mục 16.
+- **1 model: Qwen2.5-0.5B-Instruct.** Cùng họ với Qwen2.5-3B-Instruct của full-scale, nên chat template, tokenizer và code path chuyển thẳng lên được. SmolLM2-360M bị loại: nó chỉ phục vụ contrast cross-model, mà cross-model không nằm trong câu hỏi nào của §1.
+- **1 dataset: MedMCQA** — primary dataset của full-scale. MedQA-USMLE là secondary generalization benchmark ở full-scale và **không** thuộc pilot.
+- **5 client, partition non-IID skew** (§4.3) — khớp số client của full-scale, vì `n_min` design check phụ thuộc trực tiếp vào số client.
+- 2 seed. Đủ để phát hiện run không ổn định; **không** đủ để ước lượng effect, và §12.2 cấm báo cáo effect size như một estimate.
 
-## 3. Baseline (5 arm chính + 2 diagnostic)
+## 3. Arm — vertical slice
 
-| # | Arm | Train | Eval | Mục đích |
+| # | Arm | Train | Retrieval lúc eval | Chạm mục nào của full-scale |
 |---|---|---|---|---|
-| 1 | Zero-shot | Không train | k=0, không demo | Sàn dưới cùng |
-| 2 | ICL-only (closure-constrained retrieval-k5) | Không train | k=5 demo, mục 6 | Đóng góp của retrieval-ICL không cần train |
-| 3 | train-k0 / eval-k5 | LoRA SFT, prompt trơn (không demo) | k=5 demo, mục 6 | SFT không tiếp xúc ICL lúc train |
-| 4 | **demo-conditioned SFT (train-k5) / eval-k5** | LoRA SFT, mỗi prompt train có k=5 demo (leave-one-out, closure-constrained) | k=5 demo, mục 6 | SFT có tiếp xúc ICL lúc train |
-| 5 | Federated-k5 / eval-k5 | 3 client, full FedAvg protocol (mục 12), mỗi client k=5 demo chỉ từ pool cục bộ | k=5 demo, mục 6 | Matched-compute contrast với #4 (mục 7) |
-| D1 | Diagnostic: ICL-only random-k5 | Không train | k=5 demo **random**, 1 manifest cố định | Smoke diagnostic (không phải estimate tổng quát) — Qwen2.5-0.5B + MedQA, 1 run |
-| D2 | Diagnostic: Fed train-k0 / eval-k5 | 3 client, FedAvg, prompt trơn lúc train | k=5 demo, mục 6 | Đúng code path dự kiến của full-scale (FedAvg-LoRA rồi retrieval-ICL lúc inference) — Qwen2.5-0.5B + MedQA, 1 run |
+| V1 | Zero-shot | Không train | k=0 | Sàn sanity |
+| V2 | FedAvg-LoRA, `γ=0` | FedAvg-LoRA (§11) | closure-constrained top-k, **không prior** | **Ladder A mục 1** |
+| V3 | FedAvg-LoRA, prior LOO | *cùng adapter V2* | closure-constrained + `γ·w_{i,c}` LOO | **Ladder A mục 3** |
+| V4 | FedAvg-LoRA, prior shuffled | *cùng adapter V2* | closure-constrained + `γ·w_{i,π(c)}` | **Ladder A mục 4** |
+| V5 | Local-only LoRA, `γ=0` | 5 client train độc lập = FedAvg với aggregation tắt (§8.2) | closure-constrained top-k, không prior | **Ladder B mục 5** |
 
-**Thuật ngữ:** arm #4 gọi là **demo-conditioned SFT (train-k5)**, không phải "pure ICL". Contrast `train-k5 − train-k0` đo hiệu ứng của cả gói gồm demo context, repeated exposure, và compute bổ sung.
+**V2, V3, V4 dùng chung đúng một adapter mỗi seed** — prior áp ở inference, không ở training. Ba arm này vì vậy tốn **ba eval pass, không phải ba training run**. Đây là lý do ladder A rẻ và là lý do nó nên chạy trước ở cả pilot lẫn full-scale.
 
-**Định dạng demo:** mỗi demo giữ đầy đủ `question + 4 options + gold label` — task-isomorphic với query, không rút gọn thành chỉ câu hỏi+đáp án tự do.
+**Về V4 (shuffled prior)** — mục này không nằm trong yêu cầu "chạm mục 1 + mục 3", tôi thêm vào vì nó là inference-only trên adapter đã có, tức gần như miễn phí, và nó là **falsification test** của chính đóng góp số 2: nếu prior shuffled ngang prior LOO thì `γ·w` chỉ đang hoạt động như một nhiễu/temperature cho scorer chứ không truyền tri thức xuyên viện. Chạy nó ở pilot với giá một eval pass rẻ hơn nhiều so với phát hiện ra ở full-scale. V4 là nấc đầu tiên của thang cắt phạm vi (§15.3) nếu budget không cho phép.
 
-## 4. Data provenance & partitioning
+**Không có trong pilot** (đã nằm ở ladder full-scale, chạy ở pilot là chạy hai lần): local prior (mục 2), FedAvg + local adaptation / Ditto (mục 7), centralized LoRA (mục 8), public-corpus retrieval, random few-shot.
 
-### 4.1 MedQA-USMLE
+## 4. Data provenance & non-IID partition
 
-**Bảo toàn official train/dev/test splits** của MedQA repo — không pool rồi chia lại.
+### 4.1 MedMCQA — nguồn và cách gọi tên
 
-- `train-core` (600): subsample từ official train split.
-- `dev-query` + `dev-support` (100 + 100): subsample từ official dev split.
-- `test-query` + `test-support` (300 + 300): subsample từ official test split.
+MedMCQA có `train` (~182k), `validation` (~4.2k, có nhãn), `test` (~6k, **nhãn bị giữ lại**). Vì test không có nhãn công khai:
 
-Gọi đúng tên phần test là **"labeled in-domain support carved from the official test split"** — đây không phải standard untouched MedQA test evaluation, vì đã subsample + client-partition. Không so sánh trực tiếp con số với literature benchmark trên full official test set.
+- `train-core` + `val-support`: subsample từ official **train** split.
+- `eval-query`: subsample từ official **validation** split.
+- `stats-holdout`: subsample từ official train split, **tách rời `train-core`**, dùng riêng để tính `(a_{j,c}, n_{j,c})` ở §7.
 
-### 4.2 MedQuAD (không có official split sẵn)
+Gọi đúng tên phần đánh giá là **"labeled evaluation carved from the official MedMCQA validation split"** — không phải "MedMCQA test accuracy". Không so sánh trực tiếp con số với leaderboard trên official test set.
 
-1. Filter và log các câu missing/empty answer.
-2. Group theo (source document/URL, focus/CUI, near-duplicate cluster).
-3. **Group-split trước khi subsample** — chia nhóm (không chia lẻ item) thành train/dev/test-role.
-4. Subsample trong từng vai trò xuống đúng số lượng mục tiêu (600/200/600), **có reserve pool** phía trên số mục tiêu để phục vụ refill (mục 5) mà không thu hẹp cohort cuối cùng.
-5. Human-audit tính "chỉ có một đáp án đúng" trên các nhóm/ứng viên tiềm năng (trước khi candidate cuối được xây trong DAG ở mục 5).
+Giữ metadata `subject_name` và `topic_name` của MedMCQA xuyên suốt — chúng là `c` trong `w_{i,c}` và không được drop ở bất kỳ bước nào của DAG (§5).
 
-Tham khảo cấu trúc nguồn tại MedQuAD repository và official splits tại MedQA repository ở bước implementation.
+### 4.2 Bốn vai trò dữ liệu, disjoint bắt buộc
 
-### 4.3 Client-scoping — áp dụng cho TẤT CẢ các phần
+| Vai trò | Nguồn | Dùng cho |
+|---|---|---|
+| `train-core` | train split | SFT (V2, V5) |
+| `val-support` | train split | Pool demo để retrieve |
+| `stats-holdout` | train split | Tính `a_{j,c}`, `n_{j,c}` (§7) — **không** dùng để train, **không** dùng làm demo |
+| `eval-query` | validation split | Query lúc eval |
 
-- Gán `client_id` cố định (1 trong 3) cho toàn bộ `train-core`, `dev-query`, `dev-support`, `test-query`, `test-support` của cả hai dataset, bằng **deterministic group-aware bin packing/stratification** — không giả định chia đều tuyệt đối. Với MedQuAD, việc gán tôn trọng ranh giới nhóm ở mục 4.2 (một nhóm nguồn không bị chia giữa các client).
-- Kích thước pool cục bộ mỗi client gọi là `n_i` (không hard-code bằng 200); khi retrieve leave-one-out trong pool của chính nó, pool khả dụng là `n_i − 1`, **không giả định luôn bằng 199**.
-- Query-ID và support-ID trong mỗi role/client phải **disjoint rõ ràng**, kiểm tra bằng script (mục 17).
-- Kiểm tra đủ demo/distractor hợp lệ cho từng role/client **trước** khi bắt đầu candidate/retrieval (dùng reserve pool ở 4.2 bước 4 để refill nếu thiếu).
-- **Mọi arm có ICL** (kể cả centralized) chỉ retrieve demo từ support-pool cùng `client_id` với query — không chỉ FL mới bị giới hạn phạm vi.
+`stats-holdout` phải tách khỏi cả `train-core` lẫn `val-support`. Nếu nó trùng `train-core`, `a_{j,c}` là training accuracy và prior đo sai thứ cần đo. Nếu nó trùng `val-support`, prior và demo pool tương quan nhau và contrast V3−V2 confounded. Verify bằng script (§16).
+
+### 4.3 Partition non-IID skew — không disjoint
+
+Theo full-scale §5.2: partition **skew chứ không disjoint**. Mỗi client có cụm specialty trội nhưng giữ long tail các subject còn lại.
+
+- 5 client, mỗi client gắn một cụm subject trội của MedMCQA.
+- Tỷ lệ subject mỗi client rút từ Dirichlet với concentration `ρ`, nghiêng về cụm trội của client đó. `ρ` cố định ở pilot (một giá trị duy nhất, ghi trong config); sweep `ρ` là việc của RQ3 full-scale.
+- Gán deterministic, group-aware, tôn trọng ranh giới near-duplicate cluster — một nhóm câu hỏi gần trùng không bị chia giữa các client.
+- Kích thước pool cục bộ mỗi client là `n_i`, **không hard-code**; leave-one-out trong pool của chính nó cho `n_i − 1`.
+- **Mọi arm có retrieval** chỉ lấy demo từ `val-support` cùng `client_id` với query — kể cả V5.
+
+Lý do không dùng partition disjoint của full-scale rev 1: nếu subject `c` chỉ tồn tại ở client `i` thì `Σ_{j≠i} n_{j,c} = 0` và `w_{i,c}` không xác định đúng ở những subject client `i` retrieve nhiều nhất. Partition disjoint và prior LOO loại trừ nhau về mặt toán học.
 
 ## 5. Artifact construction DAG — thứ tự duy nhất, bắt buộc
 
-Đây là điểm sửa cốt lõi của rev 3: rev 2 mô tả candidate-building (mục 4.2 cũ) và demo-retrieval (mục 5 cũ) như hai quá trình tách rời, khiến ràng buộc "candidate không trùng nguồn demo" không thể enforce được (candidate được xây trước khi demo tồn tại). Từ rev 3, toàn bộ artifact được xây theo đúng một DAG:
+Giữ nguyên từ rev 3. Toàn bộ artifact xây theo đúng một DAG, không có bước nào seal riêng lẻ trước khi bước trước nó xong cho toàn bộ cohort:
 
 ```
 raw + hash
-  → split / group (mục 4.2)
-  → client assignment (mục 4.3)
-  → build candidate sets (mục 9 — bao gồm distractor semi-hard cho MedQuAD)
-  → closure-constrained demo selection (mục 6)
-  → build final prompts (mục 8 — canonical template)
-  → dual-tokenizer fit check (mục 8)
-  → human audit TRÊN ĐÚNG displayed text (không audit candidate abstract, audit chính text sẽ hiển thị cho model)
-  → refill nếu lỗi (dùng reserve pool, mục 4.2)
-  → seal cohort / candidate / prompt manifest
+  → split theo vai trò (§4.2) + group near-duplicate
+  → client assignment non-IID skew (§4.3)
+  → LOO support design check (§7.3)          ← gate: trượt thì dừng, không train
+  → train FedAvg-LoRA tới round R_0
+  → tính (a_{j,c}, n_{j,c}) trên stats-holdout → w_{i,c}, freeze (§7)
+  → closure-constrained demo selection, có/không prior (§6)
+  → build final prompts (§9 — canonical template)
+  → tokenizer fit check
+  → human audit TRÊN ĐÚNG displayed text
+  → refill nếu lỗi (reserve pool)
+  → seal cohort / prompt manifest
 ```
 
-- **Refill = chạy lại toàn bộ vòng candidate → retrieval → fit → audit** cho item bị lỗi — không patch cục bộ một bước rồi giữ nguyên kết quả các bước khác (tránh trạng thái không nhất quán).
-- Không có bước nào trong DAG được seal riêng lẻ trước bước trước nó hoàn tất cho toàn bộ cohort.
-- Manifest chỉ seal sau khi toàn bộ DAG (kể cả audit + refill) đã pass cho 100% item còn lại trong cohort cuối.
+- **Refill = chạy lại toàn bộ vòng** retrieval → fit → audit cho item lỗi, không patch cục bộ một bước.
+- Manifest chỉ seal sau khi toàn bộ DAG pass cho 100% item còn lại.
+- Khác rev 4: DAG giờ có **hai gate cắt ngang** — LOO support check trước khi train, và freeze `w` sau round `R_0`. Cả hai đều nằm giữa DAG chứ không ở đầu, nên `run_pilot.py` phải xử lý được trạng thái "đã train một phần, chưa có prior".
 
-## 6. Closure-constrained retrieval-k5
+## 6. Closure-constrained retrieval
 
-Đổi tên chính xác từ "cosine top-k" thành **closure-constrained retrieval-k5** — vì top-k thuần bị lọc thêm bởi các ràng buộc sau trước khi chấp nhận:
+Đổi tên chính xác từ "cosine top-k": top-k thuần bị lọc thêm bởi các ràng buộc sau trước khi chấp nhận.
 
-- **Retriever chỉ encode `question + candidates`, không được thấy gold label** — tránh retrieval học shortcut theo nội dung đáp án.
-- Hard constraint khác nhau theo dataset:
-  - **MedQuAD**: không lặp `example_id`, không lặp normalized-answer-hash, không lặp near-duplicate cluster (mục 4.2) trong cùng một prompt; source-document của query phải khác source-document của mọi demo được chọn.
-  - **MedQA**: hard-ban question ID trùng/near-duplicate câu hỏi; **chỉ log** (không ban) option-text overlap, vì các lựa chọn phổ biến kiểu "none of the above" có thể lặp hợp lệ giữa các câu khác nhau.
-- **Preflight bắt buộc**: trước khi seal, chứng minh mỗi query trong cohort còn đủ ≥5 demo hợp lệ sau khi áp toàn bộ closure constraint (nếu không đủ, dùng reserve pool để refill theo DAG mục 5, hoặc loại item — báo exclusion rate).
-- **Log bắt buộc**: số demo bị closure filter loại theo từng query, rank gốc (trước filter) của các demo cuối cùng được giữ, và tỷ lệ query phải tìm sâu quá top-5/top-10 mới đủ 5 demo hợp lệ.
+- **Retriever chỉ encode `question + options`, không được thấy gold label.**
+- Hard constraint (MedMCQA): ban question ID trùng và near-duplicate question trong cùng prompt; **chỉ log** (không ban) option-text overlap, vì các lựa chọn phổ biến có thể lặp hợp lệ giữa các câu khác nhau.
+- Chỉ retrieve trong `val-support` cùng `client_id`.
+- **Preflight bắt buộc**: trước khi seal, chứng minh mỗi query còn đủ ≥k demo hợp lệ sau toàn bộ closure constraint; nếu thiếu, refill theo DAG hoặc loại item và báo exclusion rate.
+- **Log bắt buộc**: số demo bị closure filter loại theo từng query, rank gốc trước filter của các demo được giữ, tỷ lệ query phải tìm sâu quá top-k mới đủ.
 
-## 7. Matched-compute contract: Central vs Federated
+### 6.1 Tích hợp prior vào scorer
 
-**Estimand chính xác** (sửa từ rev 2, vốn nói sai là "chỉ khác aggregation"):
+V2/V3/V4 dùng đúng một scorer, khác nhau **chỉ ở số hạng prior**:
 
-> Matched data/prompt/exposure comparison of pooled optimization versus the full FedAvg optimization protocol.
+```
+s(d, q, i) = α·sim(e_d, e_q) − β·redundancy(d, S) + γ·w*_{i, c(d)}
+```
 
-FL không chỉ khác Central ở cách gộp tham số cuối cùng — FL còn có local optimizer steps riêng theo từng client và optimizer reset mỗi round (client drift là hiệu ứng thuật toán thật, không chỉ là aggregation). Vì vậy contrast này so sánh hai **optimization protocol đầy đủ** dưới cùng dữ liệu/prompt/exposure, không phải một biến thể "giống hệt trừ một bước".
+| Arm | `w*` | `γ` |
+|---|---|---|
+| V2 | — | 0 |
+| V3 | `w_{i,c}` LOO (§7) | `γ > 0`, chọn trên dev |
+| V4 | `w_{i,π(c)}`, `π` là hoán vị ngẫu nhiên cố định trên tập subject | cùng `γ` với V3 |
 
-Để dữ liệu/prompt/exposure thật sự matched:
+Ràng buộc engineering: ba variant là **ba mode của cùng module** `closure_retriever.py` (`--prior {none,loo,shuffled}`), không phải ba đường code. Closure constraint, pool hợp lệ, `α`, `β`, encoder và prompt template phải identical giữa ba mode — có unit test assert pool identity (§16). Nếu không dùng chung module, "khác nhau đúng một số hạng" trở thành quy ước phải tự kiểm bằng tay và sẽ trôi.
 
-1. **Precompute canonical prompt manifest** qua DAG ở mục 5: với mỗi target trong `train-core`, closure-constrained retrieve k=5 demo chỉ từ pool cục bộ cùng `client_id` (kích thước `n_i − 1`).
-2. **Centralized (arm #4) train trên union của chính các local prompt manifest đó** — mỗi example dùng đúng demo set đã retrieve theo phạm vi client của nó; khác biệt duy nhất với FL là 600 example được gộp vào một optimizer thay vì chạy qua full FedAvg protocol.
-3. **FL (arm #5) phân phối đúng cùng manifest** theo `client_id` — không tính lại retrieval riêng.
-4. Log và so khớp: tổng target exposures, tổng token xử lý, số optimizer update, effective batch size.
+`γ` chọn trên dev **một lần cho V3**, và V4 dùng lại đúng giá trị đó. Tune `γ` riêng cho V4 sẽ phá vai trò control của nó.
 
-Khóa cấu trúc bổ sung (chi tiết hyperparameter cụ thể để dành implementation plan):
+## 7. Federated prior LOO — đường tính và design check
 
-- Weighted FedAvg áp dụng **trực tiếp trên trainable LoRA tensor A/B** (không có tham số nào khác được aggregate).
-- Cùng adapter initialization giữa Central và FL.
-- Shared LoRA architecture (rank/alpha/target modules giống nhau giữa hai arm).
-- Equal tuning budget hoặc shared search rule — Central và FL không được nhận lượng hyperparameter-search khác nhau.
+Đây là phần mới hoàn toàn ở rev 5 và là lý do pilot tồn tại.
 
-## 8. Prompt & Context Contract
+### 7.1 Kênh thống kê
 
-- **Một canonical textual prompt** dùng chung cho cả hai model (cùng text, chỉ khác chat-template bắt buộc của từng tokenizer).
-- Thứ tự cố định: `system → 5 demos → query + candidates → final-answer instruction`.
-- Demo hiển thị đầy đủ `question + 4 options + gold label` (mục 3) — task-isomorphic với phần query.
-- Format output chuẩn: `Final answer: <A|B|C|D>` — instruct model chỉ trả lời đúng format này.
-- Decoding: `do_sample=false` (greedy), deterministic.
-- Ngân sách token đề xuất: `max_input_tokens = 2048`, reserve 32–64 token cho output — áp dụng cố định cho cả hai model (cần xác nhận ở implementation plan, mục 19).
-- Mỗi manifest **tokenize thử bằng cả hai tokenizer** (Qwen2.5 và SmolLM2) trước khi seal; lấy số token lớn hơn giữa hai model để quyết định overflow.
-- **100% mẫu trong crossed matrix cuối cùng phải giữ đúng `effective_k=5`** — không truncate khác nhau theo model, không âm thầm drop demo.
-- Overflow ở k=5: sửa representation hoặc loại item khỏi manifest trước khi seal (theo DAG mục 5), báo cáo exclusion rate theo dataset/model.
+Sau round `R_0`, mỗi client `j` đánh giá global adapter hiện tại trên `stats-holdout` cục bộ của mình và release, theo từng subject `c`, **đúng hai vô hướng**:
+
+```
+( a_{j,c}, n_{j,c} )
+```
+
+Không có item thô, câu hỏi, đáp án hay embedding nào rời khỏi client. Payload này được đo và báo cáo như một phần của communication cost (§13) — nó không miễn phí và cũng không vô hại (§18).
+
+### 7.2 Prior
+
+```
+ē_{-i,c} = Σ_{j≠i} n_{j,c}·(1 − a_{j,c}) / Σ_{j≠i} n_{j,c}
+
+w_{i,c}  = ( ē_{-i,c} − mean_{c'} ē_{-i,c'} ) / std_{c'} ē_{-i,c'}
+```
+
+Chỉ số `i` bị loại khỏi tổng **theo cấu trúc**. Đây chính là tính chất làm cho chữ "federated" trong contrast V3−V2 có nghĩa; nếu thống kê của chính client `i` lọt vào `w_{i,·}` thì đó là local prior đội lốt federated và không contrast nào phân biệt được hai thứ.
+
+**Freeze**: `w` tính một lần từ adapter ở round `R_0` rồi đóng băng tới hết run. Nếu tính lại mỗi round, retrieval và training co-adapt trong cùng một run và không contrast nào quy được hiệu ứng cho bên nào. `R_0` cố định trước, ghi trong config.
+
+### 7.3 Design check — gate cứng trước khi train
+
+```
+min over (i,c) với n_{i,c} > 0 của  Σ_{j≠i} n_{j,c}  ≥  n_min
+```
+
+`n_min` cố định trước khi chạy. Subject nào trượt check thì set `w_{i,c} = 0` và **báo exclusion rate theo client**.
+
+Đây là gate, không phải một metric để ngắm: nếu tỷ lệ `(i,c)` trượt vượt ngưỡng đã khai báo trước, pilot **dừng và báo F2 = fail** thay vì chạy tiếp — vì `w` khi đó là nhiễu trên đúng những subject quan trọng nhất với từng client, và mọi con số phía sau đều vô nghĩa. Đây là kết quả hợp lệ và có giá trị của pilot, không phải một thất bại vận hành.
+
+## 8. Matched-compute contract
+
+### 8.1 Estimand
+
+> Matched data/prompt/exposure comparison of the full FedAvg optimization protocol versus the same protocol with aggregation disabled.
+
+FL khác local-only không chỉ ở bước gộp tham số cuối: FL có optimizer reset mỗi round và client drift là hiệu ứng thuật toán thật. Contract dưới đây làm cho **đúng một biến** khác nhau giữa V2 và V5.
+
+### 8.2 V5 (local-only) = FL protocol với aggregation tắt
+
+Local-only **không** implement thành script riêng. Nó là `federated_lora.py --no-aggregate`: mỗi client giữ adapter của mình xuyên suốt, cùng số local epoch, cùng số round, cùng lịch optimizer reset, cùng LoRA init, cùng manifest như V2.
+
+Hệ quả: contrast V2−V5 cô lập đúng bước aggregation. Tổng optimizer step, tổng token, exposure của từng client giống hệt nhau; thứ duy nhất khác là adapter có được trung bình hoá giữa các round hay không.
+
+**Báo cáo**: per-client accuracy, và aggregate = trung bình có trọng số theo `|eval-query_i|`. Δ per-client báo riêng — dưới partition skew, federation nâng đều mọi client hay chỉ kéo client yếu lên (và có kéo client mạnh xuống không) là finding thật.
+
+### 8.3 Khoá cấu trúc
+
+- Weighted FedAvg **trực tiếp trên trainable LoRA tensor A/B**, không aggregate tham số nào khác.
+- Cùng adapter initialization giữa V2 và V5.
+- Shared LoRA architecture (rank/alpha/target modules).
+- Equal tuning budget giữa V2 và V5.
+
+## 9. Prompt & Context Contract
+
+- **Một canonical textual prompt**, chỉ khác chat-template bắt buộc của tokenizer.
+- Thứ tự cố định: `system → k demos → query + options → answer instruction`.
+- Demo hiển thị đầy đủ `question + options + gold label` — task-isomorphic với query.
+- Decoding cho conditional-likelihood: không sinh; scoring trực tiếp (§10).
+- `max_input_tokens = 2048`, reserve 32–64 token cho output — xác nhận ở implementation plan.
+- Manifest tokenize thử trước khi seal; overflow ở k: sửa representation hoặc loại item trước khi seal, báo exclusion rate.
+- **100% mẫu trong manifest phải giữ đúng `effective_k`** khai báo của config — verifier so `effective_k == expected_k`, không hard-code kỳ vọng.
 - **SFT loss masking**: chỉ tính loss trên target-answer span; toàn bộ prompt + demo đặt `label = -100`.
 
-## 9. MedQuAD → constructed 4-way MCQ
+## 10. Evaluator — conditional log-likelihood là primary
 
-- Distractor: semi-hard negative — cùng topic, độ dài tương đồng, gần về ngữ nghĩa qua closure-constrained BioBERT retrieval (mục 6), loại near-duplicate của gold.
-- **Ràng buộc nguồn** (đã sửa mâu thuẫn ở rev 2): candidate source không được trùng nguồn của query, và không được trùng nguồn của bất kỳ demo nào trong cùng prompt — ràng buộc "cùng topic" chỉ áp dụng ở mức chủ đề/ngữ nghĩa, không phải cùng source document. Việc này khả thi vì candidate-building xảy ra TRƯỚC demo-selection trong DAG (mục 5) nhưng demo-selection biết candidate set đã chọn để loại trùng nguồn — tức bước "closure-constrained demo selection" (mục 5) nhận candidate set làm input và áp constraint "≠ nguồn candidate" khi retrieve demo.
-- Candidate set cố định một lần sau khi seal manifest (mục 5), dùng chung cho mọi model/baseline/seed.
-- Vị trí gold cân bằng ngẫu nhiên A/B/C/D, seed cố định.
-- Metric gọi đúng tên **"constructed 4-way MedQuAD accuracy"**, không phải "open-ended MedQuAD QA accuracy".
+Đổi so với rev 4. Full-scale §4 chọn conditional log-likelihood làm phương pháp answer-selection, nên pilot phải dùng đúng nó làm **primary**, không phải làm tầng đối chiếu:
 
-## 10. Hiệu chuẩn BioBERT
+```
+ŷ = argmax_k  log P(o_k | q, prompt)
+```
 
-Encoder: `dmis-lab/biobert-base-cased-v1.2` — không phải sentence-embedding model huấn luyện sẵn cho similarity.
+Không sinh free-form rồi match — chính là confound mà full-scale nêu.
 
-- Masked mean pooling (loại padding + special token), L2-normalize nhất quán.
-- MedQuAD answer > 512 token: cắt tại ranh giới câu gần 512 token nhất, log số câu bị cắt.
-- Audit tay 50–100 output tổng quát (`eval/calibrate_matcher.py`).
-- **Circularity risk**: BioBERT vừa tạo semi-hard distractor (mục 9) vừa làm fallback judge (mục 11) vừa làm retriever (mục 6) — audit bắt buộc: MedQuAD single-correctness (mục 4.2 bước 5) và evaluator agreement (mục 11).
+Generate-and-match (state machine parse → exact-match → unresolved) giữ lại làm **agreement check trên một subsample**, không phải metric chính. Báo cáo:
 
-## 11. Evaluator — state machine 4 bước, 7 metric tách biệt
+1. Conditional-likelihood accuracy (**primary**), denominator = N.
+2. Parse coverage của generate-and-match trên subsample.
+3. Agreement matrix giữa conditional-likelihood và generate-and-match trên subsample.
+4. Per-client accuracy (bắt buộc, §8.2).
 
-Sửa lỗi denominator của rev 2 (strict-parsed-accuracy tính trên tập con parse-thành-công có thể bị thổi phồng nếu model né câu khó bằng output sai format).
+Nếu hai phương pháp đảo thứ hạng arm, kết luận phải ghi rõ **"evaluator-dependent"**.
 
-**State machine:**
+**Ghi chú về BioBERT**: ở rev 4, BioBERT vừa tạo distractor, vừa làm fallback judge, vừa làm retriever — circularity risk phải audit riêng. Rev 5 bỏ MedQuAD nên không còn constructed distractor, và conditional-likelihood primary nên không còn embedding fallback judge. BioBERT giờ **chỉ còn một vai trò là retrieval encoder**, và circularity risk gần như biến mất. Vẫn giữ: masked mean pooling, L2-normalize, audit tay 50–100 output.
 
-1. Parse terminal label theo grammar đóng `Final answer: A|B|C|D`.
-2. Nếu thất bại → exact-normalized whole-candidate-text match.
-3. Nếu tiếp tục thất bại → BioBERT fallback (embedding-match).
-4. Tie hoặc confidence thấp → **unresolved** (trạng thái cuối riêng, không ép về một đáp án).
+## 11. FL contract — khóa trước khi chạy eval
 
-**7 metric báo cáo riêng biệt:**
-
-1. Parse coverage (% đạt bước 1).
-2. Parsed-subset accuracy — **diagnostic only**, denominator = tập con parse thành công.
-3. All-item strict accuracy — denominator = N (tổng), parse-failure tính là sai.
-4. Fallback-assisted accuracy — denominator = N, unresolved tính là sai.
-5. Fallback/unresolved rate.
-6. Human agreement (trên tập fallback/ambiguous, tách khỏi audit tổng quát 50–100 mẫu ở mục 10).
-7. Conditional-likelihood accuracy + agreement matrix giữa parsed/fallback-assisted/conditional-likelihood.
-
-Tên metric chính gọi là **"pipeline answer-selection accuracy"**. Nếu matcher không qua ngưỡng agreement đóng băng trước test (mục 19), toàn bộ metric phải mang nhãn **"unvalidated pipeline diagnostic"**. Nếu pipeline-accuracy và conditional-likelihood-accuracy đảo dấu effect hoặc đảo thứ hạng arm ở cùng cell, kết luận phải ghi rõ **"evaluator-dependent"**, không chọn một phương pháp làm ground truth ngầm.
-
-## 12. FL contract — khóa trước khi chạy test
-
-- Constant learning rate trong suốt các round (không schedule/decay).
+- Constant learning rate suốt các round (không schedule/decay).
 - Client optimizer reset sau mỗi round.
-- Cả 3 client tham gia mỗi round (full participation).
-- Central và FL dùng cùng base model và cùng LoRA initialization, cùng shared architecture (mục 7).
-- Weighted FedAvg **trực tiếp trên LoRA tensor A/B**, weighted theo số target example của mỗi client.
+- Cả 5 client tham gia mỗi round (full participation).
+- Weighted FedAvg trực tiếp trên LoRA tensor A/B, weighted theo số example của mỗi client.
 - Server không giữ optimizer state (pure parameter averaging).
-- Local epochs, số round, batch size, gradient accumulation, LR search space: chọn trên dev set, freeze trước khi chạm test, cùng ngân sách tuning với Central (mục 7).
-- Unit test bắt buộc:
-  - FL chạy với 1 client duy nhất phải cho kết quả gần tương đương centralized local training trên đúng dữ liệu client đó.
-  - Weighted aggregation phải khớp kết quả tính tay trên một toy case.
+- Local epochs, số round, `R_0`, batch size, gradient accumulation, LR, `γ`: chọn trên dev, freeze trước khi chạm `eval-query`.
+- Áp cho **V2 và V5** (V5 chỉ khác ở `--no-aggregate`).
 
-## 13. Success criteria
+Unit test bắt buộc:
 
-### 13.1 Operational
+- FL với 1 client / 1 round phải cho kết quả tương đương centralized training trên đúng dữ liệu client đó.
+- Weighted aggregation khớp kết quả tính tay trên toy case.
+- `--no-aggregate` với 5 client cho 5 adapter khác nhau, và tổng optimizer step mỗi client **khớp chính xác** với V2 cùng seed (assert bằng số).
+- `closure_retriever.py`: pool hợp lệ trả về cho `--prior none|loo|shuffled` phải **identical set** với cùng query + manifest.
+- `w_{i,c}` tính từ toy stats phải khớp tay, và phải **assert `i` không nằm trong tổng** (test trực tiếp tính chất LOO, không suy ra từ giá trị).
 
-- Toàn bộ run trong crossed matrix + 2 diagnostic chạy xong không lỗi.
-- Manifest hash integrity — mọi input dùng để train/eval khớp hash đã seal.
-- Query/support disjointness và closure constraint được verify bằng script, không chỉ theo thiết kế (mục 4.3, 6).
-- Không có cross-client retrieval (verify runtime, không chỉ khẳng định trong thiết kế).
-- `effective_k=5` đúng 100% mẫu trong crossed matrix (verify, không chỉ khẳng định).
+## 12. Success criteria
+
+### 12.1 Operational
+
+- Toàn bộ run của slice chạy xong không lỗi.
+- Manifest hash integrity — mọi input train/eval khớp hash đã seal.
+- Disjointness bốn vai trò dữ liệu (§4.2) verify bằng script.
+- Không có cross-client retrieval (verify runtime).
+- `effective_k == expected_k` 100% mẫu cho mọi config.
+- **LOO design check (§7.3) chạy và ghi kết quả trước mọi training run.**
+- **`w` được freeze tại `R_0`** — verify hash của `w` không đổi giữa các round sau `R_0`.
 - Test config đã freeze không bị sửa sau khi seal.
-- Artifact completeness: mọi run xuất đủ file kỳ vọng.
-- Deterministic replay: chạy lại cùng seed/config phải ra cùng kết quả (test thật, không chỉ giả định).
-- Resume/idempotency: một run bị gián đoạn có thể resume mà không hỏng kết quả.
-- Rerun kỹ thuật (technical rerun) chỉ hợp lệ khi cùng toàn bộ hash; mọi thay đổi protocol phải tạo **manifest version mới**, không ghi đè.
-- Output mỗi run lưu: per-example prediction, config/manifest/git/model hash, timing + resource metrics — không chỉ `results/*.json` tổng hợp.
+- Deterministic replay: cùng seed/config ra cùng kết quả (test thật).
+- Resume/idempotency: run gián đoạn resume được không hỏng kết quả.
+- Rerun kỹ thuật chỉ hợp lệ khi cùng toàn bộ hash; đổi protocol phải tạo **manifest version mới**.
+- Mỗi run lưu: per-example prediction, config/manifest/git/model hash, timing + resource metrics.
 
-### 13.2 Scientific — toàn bộ exploratory (không còn mục "confirmatory")
+### 12.2 Feasibility — kết luận của pilot, không phải scientific claim
 
-Rev 2 tự nhận một contrast "confirmatory" (non-inferiority FL vs Central) nhưng không có primary model×dataset cell định trước, không power calculation, và chỉ 3 seed — không đủ chuẩn. Rev 3 hạ toàn bộ về exploratory, báo riêng từng cell model×dataset (không pool tùy ý):
+Pilot báo cáo **F1/F2/F3 của §1**, không báo cáo effect size như một estimate. Với 2 seed và một cell duy nhất, mọi Δ chỉ được trình bày như **directional observation kèm cả hai giá trị seed**, không CI, không kết luận về dấu.
 
-- `train-k5 − train-k0` (demo-conditioned SFT effect, giữ eval-k=5 cố định).
-- `ICL-only(retrieval-k5) − zero-shot`.
-- `ICL-only(retrieval-k5) − ICL-only(random-k5)` — dùng D1, gọi rõ là **single-manifest random-k5 smoke diagnostic**, không phải estimate tổng quát của phân phối random-demo.
-- `zero-shot ≤ train-k5` — giả thuyết cần kiểm chứng, không phải điều kiện go/no-go.
-- `Δ = Federated-k5 − train-k5` (matched-compute, mục 7) — báo cáo như **descriptive engineering reference** kèm −5pp làm mốc tham chiếu, **không phải pass/fail gate**, không dùng từ "confirmatory".
+| Câu hỏi | Tiêu chí |
+|---|---|
+| F1 | Chuỗi §5 chạy end-to-end, mọi gate pass, artifact đầy đủ |
+| F2 | Tỷ lệ `(i,c)` trượt LOO check ≤ ngưỡng khai báo trước; nếu vượt → **F2 fail, báo cáo và dừng** |
+| F3 | Có số đo thật cho wall-clock, VRAM, adapter bytes/round, payload thống kê |
 
-**Phương pháp resampling** (95% CI, mọi contrast):
+Contrast được phép **quan sát** (không được gọi là estimate): `V3−V2` (prior có làm gì không), `V3−V4` (phần federated có làm gì không), `V2−V5` (aggregation có làm gì không). Cả ba đều để lên full-scale ước lượng.
 
-- Contrast không train (deterministic): paired item bootstrap trên `test-query`.
-- Contrast có train: Central/FL và các seed dùng **paired seed ID** (seed=i của arm A khớp seed=i của arm B); resample paired theo cả seed-pair và evaluation unit (bootstrap hai tầng, paired chứ không độc lập).
-- MedQuAD: resample ở cấp **source/near-duplicate group** trong từng client cố định (không resample ở cấp item thô, vì item không độc lập trong cùng nhóm nguồn).
-- Cận dưới CI 95% accuracy mỗi arm đã train phải > 25% (random-chance floor — hợp lệ vì candidate luôn hiển thị trong prompt, mục 8).
-
-## 14. Feasibility & systems metrics
-
-Bổ sung bắt buộc — spec trước thiếu gần như toàn bộ metric hệ thống cần để quyết định scale full-scale:
+## 13. Feasibility & systems metrics
 
 - Per-client accuracy.
-- Prompt token P50/P95/max theo dataset/model.
-- Train/eval wall-clock.
-- Throughput và latency.
-- Peak VRAM.
-- Adapter upload + server broadcast bytes/round (communication cost — nhất quán với metric đã nêu trong full-scale design gốc).
-- Total communication (toàn bộ FL run).
+- Prompt token P50/P95/max.
+- Train/eval wall-clock; throughput và latency; peak VRAM.
+- Adapter upload + server broadcast bytes/round.
+- **Payload kênh thống kê `(a_{j,c}, n_{j,c})` bytes/round** (mới ở rev 5).
+- Total communication toàn run.
 - FL dev curve theo round (hội tụ hay không).
-- Exclusion/refill/capacity-failure rate theo dataset/client/reason (sức khỏe vận hành của DAG mục 5).
+- **Phân bố `n_{j,c}` và tỷ lệ trượt LOO check theo client/subject** (mới ở rev 5 — đây là output chính của F2).
+- Exclusion/refill/capacity-failure rate theo client/reason.
+- Label entropy và subject proportion mỗi client (đặc trưng hoá độ skew thật đạt được).
 
-## 15. Seed policy theo arm
+## 14. Seed & config registry
 
-| Arm | Phạm vi | Seed |
+| Arm | Phạm vi | Đơn vị lặp |
 |---|---|---|
-| Zero-shot | 2 model × 2 dataset | 1 (deterministic, greedy) |
-| ICL-only (closure-constrained retrieval-k5) | 2 model × 2 dataset | 1 (deterministic) |
-| train-k0/eval-k5 | 2 model × 2 dataset | 3 |
-| demo-conditioned SFT (train-k5)/eval-k5 | 2 model × 2 dataset | 3 |
-| Federated-k5/eval-k5 | 2 model × 2 dataset | 3 (paired seed ID với train-k5, mục 13.2) |
-| D1: ICL-only random-k5 | Qwen2.5-0.5B × MedQA-USMLE | 1 (single-manifest smoke diagnostic) |
-| D2: Fed train-k0/eval-k5 | Qwen2.5-0.5B × MedQA-USMLE | 1 |
+| V1 Zero-shot | 1 cell | 1 (deterministic) |
+| V2 FedAvg `γ=0` | 1 cell | 2 shared seed ID `{s1,s2}` |
+| V3 FedAvg prior LOO | *cùng adapter V2* | cùng `{s1,s2}` — eval pass, không train |
+| V4 FedAvg prior shuffled | *cùng adapter V2* | cùng `{s1,s2}`; hoán vị `π` cố định, ghi riêng trong registry |
+| V5 Local-only | 1 cell × 5 client | cùng `{s1,s2}` |
 
-## 16. Compute gate — trình tự khóa cứng (thay "đo 1 ô đầu tiên")
+- Một tập seed ID chung cho mọi arm đã train — V2 và V5 phải paired theo seed để contrast §8.2 hợp lệ.
+- Hoán vị `π` của V4 nằm ở namespace riêng, không tái sử dụng số của training seed.
 
-1. **Token census** trên manifest đã seal (mục 5) — phân phối token thật, không ước lượng.
-2. **Benchmark worst-case**: Qwen2.5-0.5B (model lớn hơn) × MedQuAD (sequence dài hơn) × Federated-k5 (arm phức tạp/tốn nhất), chạy **cả hai evaluator** (generate+match và conditional-likelihood).
-3. Áp tuning cap (ngân sách search đã khóa ở mục 7/12).
-4. Ước tính lại toàn bộ workload thật (không chỉ 46 config — cộng cả tuning, calibration, audit, retry, eval pass thứ hai).
-5. Chỉ mở crossed matrix đầy đủ nếu nằm trong budget; nếu không, cắt phạm vi trước khi chạy, không chạy tràn rồi cắt giữa chừng.
+## 15. Compute
 
-## 17. Cấu trúc code
+### 15.1 Ước tính
+
+| Arm | Training run | Eval configuration |
+|---|---|---|
+| V1 | 0 | 1 |
+| V2 | 2 (FedAvg, 5 client, R round) | 2 |
+| V3 | 0 (dùng adapter V2) | 2 |
+| V4 | 0 (dùng adapter V2) | 2 |
+| V5 | 2 × 5 client = 10 (mỗi run trên `n_i` ≈ 1/5 dữ liệu) | 2 × 5 = 10 |
+| **Tổng** | **12 run** | **17 configuration** |
+
+So với rev 4 (84 training run / 196 configuration). Cộng: conditional-likelihood là eval pass duy nhất cho mọi arm, generate-and-match chỉ chạy trên subsample.
+
+### 15.2 Gate
+
+1. **Token census** trên manifest đã seal — phân phối token thật.
+2. **LOO design check (§7.3)** — chạy trước, vì nếu trượt thì không cần benchmark gì thêm.
+3. **Benchmark worst-case**: V2 (FedAvg 5 client) một seed, đo đủ §13.
+4. Áp tuning cap (`γ`, LR, round — ngân sách đã khoá ở §11).
+5. Chỉ mở slice đầy đủ nếu trong budget; nếu không, cắt theo §15.3 **trước** khi chạy.
+
+### 15.3 Thang cắt phạm vi
+
+1. Bỏ V4 (shuffled prior) — mất falsification test, phải nói rõ trong báo cáo.
+2. V5: 2 seed → 1 seed.
+3. Giảm `|eval-query|`, giữ nguyên số arm — thà đo thô mọi arm còn hơn đo kỹ vài arm.
+
+**Không bao giờ cắt**: V2 và V3. Không có cặp đó thì pilot không chạm ladder A và mất lý do tồn tại.
+
+## 16. Cấu trúc code
 
 ```
 Version_3/pilot/
   configs/                        # 1 config / run
   data/
-    prepare_medqa.py              # giữ official train/dev/test split
-    prepare_medquad.py            # filter, group theo source/CUI/near-dup, group-split, subsample + reserve pool
-    assign_clients.py             # deterministic group-aware client assignment, n_i theo client
-    audit_splits.py                # disjointness query/support, overlap/near-dup xuyên phần+client
-    audit_medquad_correctness.py  # human-audit "chỉ một đáp án đúng"
+    prepare_medmcqa.py            # 4 vai trò (§4.2), giữ subject_name/topic_name
+    partition_noniid.py           # Dirichlet skew 5 client, group-aware, deterministic
+    audit_splits.py               # disjointness 4 vai trò, overlap/near-dup xuyên client
+  prior/
+    client_stats.py               # tính (a_{j,c}, n_{j,c}) trên stats-holdout
+    loo_prior.py                  # ē_{-i,c} → w_{i,c}, freeze tại R_0, hoán vị π cho V4
+    support_check.py              # §7.3 design check — GATE, chạy trước train
   retrieval/
-    encoder.py                    # BioBERT wrapper: masked mean pool, L2-norm, chính sách 512-token, chỉ encode question+candidates
-    closure_retriever.py          # closure-constrained retrieval-k5 (mục 6): hard constraint theo dataset, preflight capacity, logging rank/exclusion
+    encoder.py                    # BioBERT: masked mean pool, L2-norm, chỉ encode question+options
+    closure_retriever.py          # closure constraint + preflight + logging
+                                  #   --prior {none,loo,shuffled}: V2/V3/V4 dùng CHUNG pool (§6.1)
   prompt/
-    build_manifest.py             # chạy toàn bộ DAG mục 5: candidate → demo → prompt → dual-tokenizer fit → audit → refill → seal
-    template.py                    # canonical prompt template dùng chung 2 model
+    build_manifest.py             # DAG §5: retrieval → prompt → fit → audit → refill → seal
+    template.py                   # canonical prompt template
   train/
-    lora_sft.py                    # LoRA SFT centralized (k0/k5 qua config, loss mask -100)
-    federated_lora.py              # full FedAvg protocol, FL contract mục 12
+    federated_lora.py             # FedAvg protocol, FL contract §11
+                                  #   --no-aggregate: V5 local-only, cùng protocol trừ aggregation (§8.2)
   eval/
-    generate_and_match.py          # state machine 4 bước (mục 11)
-    likelihood_score.py            # conditional log-likelihood scoring
-    calibrate_matcher.py           # audit tay tổng quát + audit tay fallback/ambiguous subset riêng
-    metrics.py                     # 7 metric, agreement matrix, gold similarity margin
-    resampling.py                  # paired item bootstrap, paired seed-pair bootstrap, MedQuAD group-level resampling
+    likelihood_score.py           # PRIMARY: conditional log-likelihood
+    generate_and_match.py         # agreement check trên subsample
+    metrics.py                    # accuracy, per-client, agreement matrix
   benchmark/
-    token_census.py                # mục 16 bước 1
-    worst_case_bench.py            # mục 16 bước 2
+    token_census.py
   ops/
-    manifest_hash.py               # hash + version manifest, seal enforcement
-    resume.py                      # resume/idempotency cho run bị gián đoạn
-  run_pilot.py                     # chạy crossed matrix + 2 diagnostic theo compute gate mục 16
-  tests/                           # retrieval exclusion, prompt format/effective_k, FedAvg single-client sanity, weighted-aggregation toy case
-  manifests/                       # candidate/demo/prompt manifest đã seal, hash, version log
+    manifest_hash.py              # hash + version manifest, seal enforcement
+    resume.py
+  run_pilot.py                    # 5 arm theo compute gate §15, xử lý trạng thái "train xong R_0, chưa có prior"
+  tests/                          # closure exclusion, pool identity 3 mode prior, LOO excludes-self,
+                                  # --no-aggregate step-count match, FedAvg toy case, effective_k
+  manifests/
   results/
-    <run_id>/predictions.jsonl     # per-example prediction
-    <run_id>/metrics.json          # 7 metric + feasibility metrics
-    <run_id>/hashes.json           # config/manifest/git/model hash
+    <run_id>/predictions.jsonl
+    <run_id>/metrics.json
+    <run_id>/hashes.json
+    <run_id>/prior_stats.json     # (a_{j,c}, n_{j,c}), w_{i,c}, kết quả support check
 ```
 
-## 18. Quyết định đã chốt qua trao đổi (tóm tắt, tránh lặp lại tranh luận)
+## 17. Quyết định đã chốt
 
-- Compute: Cloud GPU A5000 đã cấp phát.
-- Model: Qwen2.5-0.5B-Instruct + SmolLM2-360M-Instruct.
-- Dataset: MedQA-USMLE (official splits, gọi đúng "labeled in-domain support carved from test split") + MedQuAD (group-split theo provenance).
-- Eval: state machine 4 bước (parse → exact-match → BioBERT fallback → unresolved), cộng conditional-likelihood làm tầng đối chiếu — 7 metric tách biệt, không gộp một accuracy.
-- Retrieval: closure-constrained retrieval-k5 (không phải cosine top-k thuần), client-scoped, retriever không thấy gold label.
-- FL: 3 client, IID random split ở cấp client assignment, nhưng client-scoped retrieval + full FedAvg protocol là bắt buộc mọi arm.
-- FL k: 5 (khớp arm #4), matched-compute contract (mục 7) với estimand chính xác "pooled optimization vs full FedAvg protocol" — không nói "chỉ khác aggregation".
-- Arm: 5 chính + ICL-only + 2 diagnostic (D1 random-k5, D2 Fed train-k0/eval-k5).
-- Seed: theo arm, paired seed ID giữa Central/FL.
-- Toàn bộ scientific claim là exploratory; −5pp FL vs Central là descriptive engineering reference, không phải confirmatory gate.
-- Artifact xây theo một DAG duy nhất (mục 5); mọi refill chạy lại toàn bộ vòng candidate→retrieval→fit→audit.
-- Compute gate: token census → benchmark worst-case (cả 2 evaluator) → tuning cap → ước tính lại → mở grid.
+- Compute: Cloud GPU A5000, tách khỏi ngân sách full-scale.
+- **1 model (Qwen2.5-0.5B-Instruct), 1 dataset (MedMCQA), 5 client non-IID skew, 2 seed.**
+- Pilot là **vertical slice theo code path full-scale**, không phải bản thu nhỏ của một feasibility matrix.
+- **Kết luận của pilot là feasibility (F1/F2/F3), không phải effect size.** 2 seed là đủ cho mục đích đó và không đủ cho mục đích khác — §12.2 cấm vượt rào.
+- **F2 (prior LOO có ước lượng được không) là câu hỏi chính**; §7.3 là gate cứng, trượt thì dừng và đó là kết quả hợp lệ.
+- Partition **skew chứ không disjoint** — disjoint làm prior LOO không xác định (§4.3).
+- `w` freeze tại `R_0`; `stats-holdout` tách khỏi cả `train-core` lẫn `val-support`.
+- V2/V3/V4 chung một adapter, khác nhau chỉ ở mode prior của **cùng một module** retriever.
+- V5 = `federated_lora.py --no-aggregate`, không phải script riêng.
+- **Conditional log-likelihood là primary evaluator**, khớp full-scale §4; generate-and-match hạ xuống agreement check.
+- Giữ nguyên từ rev 3/rev 4: artifact DAG thứ tự duy nhất, closure-constrained retrieval, matched-compute contract, FL contract, operational gate, manifest hash + resume.
+- Bỏ khỏi pilot: MedQuAD, constructed 4-way MCQ, SmolLM2, trục eval-k, random-k5, local-only-k0, 8-arm matrix.
 
-## 19. Checklist bắt buộc cho implementation plan (không nhồi vào design spec)
+## 18. Checklist bắt buộc cho implementation plan
 
-- Git: đã init, commit + push (rewrite lịch sử để bỏ `Co-Authored-By`) — HEAD hiện tại = `origin/main` = `5b96af4`. Rev 3 (file này) chưa commit/push — chờ xác nhận.
-- Dataset/model/BioBERT revision cụ thể + hash (pin version).
-- Seed/RNG registry cụ thể (danh sách seed dùng cho từng arm, paired ID).
-- LoRA module cụ thể (rank/alpha/dropout/target modules) và optimizer parameters.
-- Ngưỡng near-duplicate detection cụ thể (lexical/semantic similarity threshold).
-- Dependency/CUDA lock (requirements pin, driver version).
-- Manifest/result JSON schema cụ thể.
-- Benchmark/tuning limit cụ thể (giới hạn thời gian/số trial tuning trên dev).
-- Test-access, retry, và resume command cụ thể.
-- `max_input_tokens = 2048` (mục 8) — xác nhận hoặc điều chỉnh.
-- Ngưỡng agreement cụ thể để đóng băng matcher trước khi gọi "pipeline answer-selection accuracy" chính thức (mục 11) — chốt dựa trên audit tay trên dev.
+- Git: đã init, commit + push; lịch sử đã rewrite để bỏ `Co-Authored-By`. **Không ghi commit hash vào tài liệu này** — nó là metadata tự tham chiếu nằm trong chính file được commit nên sẽ stale sau mỗi lần commit (rev 3 mắc đúng lỗi này). Provenance tra bằng `git log`; hash của run thuộc `results/<run_id>/hashes.json`.
+- MedMCQA revision + hash; BioBERT revision + hash (pin version).
+- Kích thước cụ thể của `train-core`, `val-support`, `stats-holdout`, `eval-query`.
+- **`ρ` (Dirichlet concentration) và cụm subject trội của từng client** — cố định, ghi trong config.
+- **`n_min` và ngưỡng tỷ lệ trượt cho F2** — phải chốt **trước** khi chạy, nếu không §7.3 không còn là gate.
+- **`R_0`** — round tính và freeze `w`.
+- `γ` search space trên dev; `α`, `β` cố định hay tune.
+- Seed registry: `{s1,s2}` chung cho V2/V5; namespace riêng cho hoán vị `π`.
+- LoRA rank/alpha/dropout/target modules; optimizer parameters — dùng chung V2 và V5.
+- Ngưỡng near-duplicate detection.
+- Dependency/CUDA lock.
+- Manifest/result JSON schema — phải mang `arm_id`, `prior_mode`, `seed_id`, `client_id`, `subject` để join được mà không parse tên file.
+- `max_input_tokens = 2048` và `k` — xác nhận hoặc điều chỉnh.
+- Kích thước subsample cho agreement check (§10).
+
+## 19. Quan hệ với full-scale
+
+Pilot này ánh xạ 1-1 vào full-scale rev 2: V2→ladder A mục 1, V3→mục 3, V4→mục 4, V5→ladder B mục 5. Không có arm nào của pilot nằm ngoài ladder full-scale, nên không có công nào bị bỏ đi khi scale lên.
+
+Những gì full-scale có mà pilot **cố ý không có**, và phải chạy ở full-scale chứ không suy ra từ pilot: local prior (ladder A mục 2), Ditto (ladder B mục 7), centralized upper bound (mục 8), public-corpus retrieval, MedQA-USMLE generalization, sweep `ρ` và `k` cho RQ3, canary exposure audit cho RQ4, và mọi ước lượng effect size kèm CI.
+
+Narrative của paper chốt trước submission, không phải trước implementation. Pilot này không đóng cửa lựa chọn nào — nó chỉ trả lời liệu cơ chế trung tâm có triển khai được hay không.

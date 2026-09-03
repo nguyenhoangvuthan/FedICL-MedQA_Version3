@@ -31,8 +31,28 @@ from .workflows import train_centralized, train_federated, train_local_clients
 _SHA = re.compile(r"^[0-9a-f]{40,64}$", re.IGNORECASE)
 
 
+def _require_existing_config(path: str | Path) -> Path:
+    """Fail with the command that produces a missing configuration file.
+
+    outputs/ is git-ignored, so a fresh clone has no sealed configuration and the bare
+    "No such file or directory" gives no hint that prepare-data is what writes one.
+    """
+    resolved = Path(path)
+    if resolved.exists():
+        return resolved
+    if resolved.name == "sealed_config.json":
+        # Configs follow outputs/<name> <-> configs/<name>.yaml.
+        suggestion = f"configs/{resolved.parent.name}.yaml"
+        raise FileNotFoundError(
+            f"{resolved} does not exist. The sealed configuration is written by "
+            f"prepare-data from the YAML config, and outputs/ is not in git. Run: "
+            f"fedicl-mqa prepare-data --config {suggestion}"
+        )
+    raise FileNotFoundError(f"configuration file not found: {resolved}")
+
+
 def _seal_config(path: str | Path) -> Config:
-    config = Config.from_file(path)
+    config = Config.from_file(_require_existing_config(path))
     if not _SHA.fullmatch(config.data.revision):
         config.data.revision = resolve_hub_revision(config.dataset_id, config.data.revision)
     if not _SHA.fullmatch(config.model.revision):
@@ -527,7 +547,7 @@ def _cuda_failure_reason(*, torch_version: str, cuda_build: str | None) -> str:
 
 def command_doctor(args: argparse.Namespace) -> None:
     """Fail-fast hardware/dependency check before a costly experiment run."""
-    config = Config.from_file(args.config)
+    config = Config.from_file(_require_existing_config(args.config))
     config.validate()
     try:
         import torch

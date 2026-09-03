@@ -69,6 +69,19 @@ uv sync --extra dev
 The shell scripts under `scripts/` are bash-only. Every step they perform is also
 available as a CLI subcommand, which runs unchanged on Windows.
 
+`uv sync` installs the default PyPI wheel for torch, which on Windows carries no CUDA
+support. Reinstall it from the PyTorch index afterwards, matching the CUDA version that
+`nvidia-smi` reports:
+
+```powershell
+uv pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu128
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+A version string ending in `+cpu` means the CPU-only wheel is still installed. Repeat
+this after any later `uv sync`, which resolves torch from PyPI again. On Linux the
+default PyPI wheel already bundles CUDA and no extra step is needed.
+
 ## Hugging Face authentication
 
 Put the access token in a single-line file named `HF_Access_Token.txt` in the repository

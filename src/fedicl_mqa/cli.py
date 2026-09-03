@@ -497,6 +497,34 @@ def command_report(args: argparse.Namespace) -> None:
     print(f"Wrote primary contrast report to {output}")
 
 
+def _cuda_failure_reason(*, torch_version: str, cuda_build: str | None) -> str:
+    """Explain why CUDA is unavailable, distinguishing the two very different causes.
+
+    A CPU-only wheel and a driver problem both surface as is_available() == False, but
+    they need opposite fixes. On Windows the default PyPI torch wheel carries no CUDA at
+    all, while on Linux it does, so the same dependency pin produces different builds per
+    platform and this is the failure a Windows setup hits first.
+    """
+    if cuda_build is None:
+        return (
+            f"PyTorch {torch_version} is a CPU-only build with no CUDA support. "
+            "The default PyPI wheel for Windows excludes CUDA; reinstall from the "
+            "PyTorch index, for example: uv pip install torch --force-reinstall "
+            "--index-url https://download.pytorch.org/whl/cu128"
+        )
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    scope = (
+        f" This process is restricted to CUDA_VISIBLE_DEVICES={visible!r}, so check that "
+        "--gpu names a device that exists."
+        if visible is not None
+        else " Check the driver with nvidia-smi."
+    )
+    return (
+        f"PyTorch {torch_version} was built against CUDA {cuda_build} but no device is "
+        f"usable, which points at the driver rather than the install.{scope}"
+    )
+
+
 def command_doctor(args: argparse.Namespace) -> None:
     """Fail-fast hardware/dependency check before a costly experiment run."""
     config = Config.from_file(args.config)
@@ -506,7 +534,11 @@ def command_doctor(args: argparse.Namespace) -> None:
     except ImportError as exc:
         raise RuntimeError("PyTorch is not installed in the active environment") from exc
     if config.hardware.device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA GPU")
+        raise RuntimeError(
+            _cuda_failure_reason(
+                torch_version=torch.__version__, cuda_build=torch.version.cuda
+            )
+        )
 
     packages = {}
     for package in ("torch", "transformers", "peft", "datasets", "sentence-transformers"):
@@ -521,6 +553,12 @@ def command_doctor(args: argparse.Namespace) -> None:
     token_file = find_token_file()
     report: dict[str, Any] = {
         "packages": packages,
+        "torch_build": {
+            "version": torch.__version__,
+            "cuda": torch.version.cuda,
+            "device_count": torch.cuda.device_count(),
+            "visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        },
         # Presence and origin only. The token value must never be printed or written
         # to any artifact, since this project hashes and seals its provenance records.
         "hf_token": {

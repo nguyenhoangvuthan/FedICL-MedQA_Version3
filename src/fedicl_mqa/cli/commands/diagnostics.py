@@ -9,7 +9,7 @@ from typing import Any
 
 from fedicl_mqa.core.auth import apply_hf_token, find_token_file
 from fedicl_mqa.core.config import Config
-from fedicl_mqa.cli.paths import _require_existing_config
+from fedicl_mqa.cli.paths import require_existing_config
 
 def _cuda_failure_reason(*, torch_version: str, cuda_build: str | None) -> str:
     """Explain why CUDA is unavailable, distinguishing the two very different causes.
@@ -41,7 +41,7 @@ def _cuda_failure_reason(*, torch_version: str, cuda_build: str | None) -> str:
 
 def command_doctor(args: argparse.Namespace) -> None:
     """Fail-fast hardware/dependency check before a costly experiment run."""
-    config = Config.from_file(_require_existing_config(args.config))
+    config = Config.from_file(require_existing_config(args.config))
     config.validate()
     try:
         import torch

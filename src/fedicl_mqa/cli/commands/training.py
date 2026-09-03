@@ -21,7 +21,15 @@ from fedicl_mqa.evaluation.priors import (
     write_priors,
 )
 from fedicl_mqa.training.workflows import train_centralized, train_federated, train_local_clients
-from fedicl_mqa.cli.paths import _checkpoint_root, _data_root, _seal_config, _selected_round
+from fedicl_mqa.cli.paths import (
+    checkpoint_root,
+    data_root,
+    evaluation_dir,
+    priors_path,
+    seal_config,
+    selected_round,
+    summary_path,
+)
 
 def _requested_seeds(config: Config, args: argparse.Namespace) -> list[int]:
     if getattr(args, "all_seeds", False):
@@ -34,10 +42,10 @@ def _requested_seeds(config: Config, args: argparse.Namespace) -> list[int]:
 
 
 def command_train(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     if args.fl_round is not None and args.mode != "centralized":
         raise ValueError("--fl-round is only valid for centralized training")
-    clients = load_partition(_data_root(config), expected_config_hash=config.hash)
+    clients = load_partition(data_root(config), expected_config_hash=config.hash)
     client_fit = {client: values["fit"] for client, values in clients.items()}
     for seed in _requested_seeds(config, args):
         if args.mode == "local":
@@ -45,7 +53,7 @@ def command_train(args: argparse.Namespace) -> None:
                 config,
                 client_fit,
                 seed=seed,
-                output_root=_checkpoint_root(config, "local"),
+                output_root=checkpoint_root(config, "local"),
                 resume=args.resume,
             )
         elif args.mode == "federated":
@@ -53,7 +61,7 @@ def command_train(args: argparse.Namespace) -> None:
                 config,
                 client_fit,
                 seed=seed,
-                output_root=_checkpoint_root(config, "federated"),
+                output_root=checkpoint_root(config, "federated"),
                 resume=args.resume,
             )
             if trainer.final_state is None:
@@ -73,38 +81,37 @@ def command_train(args: argparse.Namespace) -> None:
                 ),
             }
         else:
-            fl_round = args.fl_round or _selected_round(config)
+            fl_round = args.fl_round or selected_round(config)
             telemetry = train_centralized(
                 config,
                 client_fit,
                 seed=seed,
                 fl_rounds=fl_round,
-                output_root=_checkpoint_root(config, "centralized"),
+                output_root=checkpoint_root(config, "centralized"),
                 resume=args.resume,
             )
         write_json(
-            _checkpoint_root(config, args.mode) / f"seed-{seed}" / "telemetry.json",
+            checkpoint_root(config, args.mode) / f"seed-{seed}" / "telemetry.json",
             telemetry,
         )
         print(f"Completed {args.mode} training for seed {seed}")
 
 
 def command_select_round(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     scores: dict[int, float] = {}
     per_seed: dict[str, dict[str, float]] = {}
     for round_index in config.training.fl_round_candidates:
         round_scores: list[float] = []
         for seed in config.experiment.training_seeds:
             summary = read_json(
-                Path(config.experiment.output_dir)
-                / "evaluations"
-                / config.data.dataset
-                / "F0"
-                / f"seed-{seed}"
-                / "validation"
-                / f"round-{round_index}"
-                / "summary.json"
+                summary_path(
+                    config,
+                    "F0",
+                    seed=seed,
+                    split="validation",
+                    round_index=round_index,
+                )
             )
             value = float(summary["pipeline_accuracy"])
             round_scores.append(value)
@@ -113,44 +120,34 @@ def command_select_round(args: argparse.Namespace) -> None:
     selected = max(sorted(scores), key=lambda value: scores[value])
     for seed in config.experiment.training_seeds:
         manager = CheckpointManager(
-            _checkpoint_root(config, "federated") / f"seed-{seed}" / "global",
+            checkpoint_root(config, "federated") / f"seed-{seed}" / "global",
             config_hash=config.hash,
             model_id=config.model.id,
             model_revision=config.model.revision,
         )
         manager.mark_best(f"checkpoint-round-{selected:04d}")
     write_json(
-        _checkpoint_root(config, "federated") / "selected_round.json",
+        checkpoint_root(config, "federated") / "selected_round.json",
         {"round": selected, "mean_validation_accuracy": scores, "per_seed": per_seed},
     )
     print(f"Selected global round {selected}: mean validation accuracy {scores[selected]:.6f}")
 
 
 def command_build_priors(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     if args.seed not in config.experiment.training_seeds:
         raise ValueError(f"seed must be one of {config.experiment.training_seeds}")
-    round_index = args.round or _selected_round(config)
+    round_index = args.round or selected_round(config)
     predictions = (
-        Path(config.experiment.output_dir)
-        / "evaluations"
-        / config.data.dataset
-        / "F0"
-        / f"seed-{args.seed}"
-        / "validation"
-        / f"round-{round_index}"
+        evaluation_dir(
+            config, "F0", seed=args.seed, split="validation", round_index=round_index
+        )
         / "predictions.jsonl"
     )
     priors = leave_one_client_out_weakness(
         load_prediction_rows([predictions]), num_clients=config.data.num_clients
     )
-    output = (
-        Path(config.experiment.output_dir)
-        / "priors"
-        / config.data.dataset
-        / f"seed-{args.seed}"
-        / f"round-{round_index}.json"
-    )
+    output = priors_path(config, seed=args.seed, round_index=round_index)
     write_priors(output, priors)
     print(f"Wrote leave-one-client-out prior to {output}")
 

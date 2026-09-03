@@ -13,10 +13,10 @@ from fedicl_mqa.data.preparation import (
     resolve_hub_revision,
 )
 from fedicl_mqa.data.leakage import assert_no_support_leakage
-from fedicl_mqa.cli.paths import _data_root, _seal_config
+from fedicl_mqa.cli.paths import data_root, seal_config
 
 def command_prepare_data(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     limits = {
         "train": config.data.max_train_samples,
         "validation": config.data.max_validation_samples,
@@ -36,7 +36,7 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         seed=config.experiment.data_seed,
         min_support_per_client=config.data.min_support_per_client,
     )
-    root = _data_root(config)
+    root = data_root(config)
     materialize_partition(
         root,
         splits,
@@ -58,11 +58,11 @@ def command_prepare_data(args: argparse.Namespace) -> None:
 
 
 def command_audit_retrieval(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
-    output = _data_root(config) / "retrieval_audit.json"
+    config = seal_config(args.config)
+    output = data_root(config) / "retrieval_audit.json"
     result = audit_retrieval_cohort(
         config,
-        load_partition(_data_root(config), expected_config_hash=config.hash),
+        load_partition(data_root(config), expected_config_hash=config.hash),
         output,
     )
     print(

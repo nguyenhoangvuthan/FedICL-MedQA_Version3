@@ -26,11 +26,15 @@ from fedicl_mqa.evaluation.reporting import (
     write_contrast_report,
 )
 from fedicl_mqa.cli.paths import (
-    _checkpoint_root,
-    _data_root,
-    _evaluation_output_dir,
-    _seal_config,
-    _selected_round,
+    arms_root,
+    checkpoint_root,
+    data_root,
+    evaluation_dir,
+    priors_path,
+    report_path,
+    seal_config,
+    selected_round,
+    summary_path,
 )
 
 def _load_arm_checkpoint(
@@ -65,20 +69,20 @@ def _load_arm_checkpoint(
     if spec.checkpoint_family == "local":
 
         def before_client(client_id: int, model: Any) -> None:
-            root = _checkpoint_root(config, "local") / f"seed-{seed}" / f"client-{client_id}"
+            root = checkpoint_root(config, "local") / f"seed-{seed}" / f"client-{client_id}"
             manager(root, keep=config.training.checkpoint_keep).load(
                 "last", model=model, restore_rng=False
             )
 
         return bundle, before_client
     if spec.checkpoint_family == "federated":
-        selected = round_index or _selected_round(config)
-        root = _checkpoint_root(config, "federated") / f"seed-{seed}" / "global"
+        selected = round_index or selected_round(config)
+        root = checkpoint_root(config, "federated") / f"seed-{seed}" / "global"
         manager(root).load(
             f"checkpoint-round-{selected:04d}", model=bundle.model, restore_rng=False
         )
         return bundle, None
-    root = _checkpoint_root(config, "centralized") / f"seed-{seed}"
+    root = checkpoint_root(config, "centralized") / f"seed-{seed}"
     manager(root, keep=config.training.checkpoint_keep).load(
         "last", model=bundle.model, restore_rng=False
     )
@@ -107,17 +111,11 @@ def _run_single_evaluation(
     subject_weights: str | None = None,
 ) -> dict[str, Any]:
     bundle, before_client = _load_arm_checkpoint(config, arm, seed, round_index)
-    clients = load_partition(_data_root(config), expected_config_hash=config.hash)
+    clients = load_partition(data_root(config), expected_config_hash=config.hash)
     prior_path = subject_weights
     if arm == "F2" and prior_path is None:
-        selected = round_index or _selected_round(config)
-        prior_path = str(
-            Path(config.experiment.output_dir)
-            / "priors"
-            / config.data.dataset
-            / f"seed-{seed}"
-            / f"round-{selected}.json"
-        )
+        selected = round_index or selected_round(config)
+        prior_path = str(priors_path(config, seed=seed, round_index=selected))
     priors = read_priors(prior_path) if prior_path else None
     return evaluate_arm(
         bundle,
@@ -125,7 +123,7 @@ def _run_single_evaluation(
         clients,
         arm=arm,
         split=split,
-        output_dir=_evaluation_output_dir(
+        output_dir=evaluation_dir(
             config, arm, seed=seed, split=split, round_index=round_index
         ),
         seed=seed,
@@ -148,7 +146,7 @@ def _sweep_arm(
     accuracies: list[float] = []
     for seed in _effective_seeds(config, arm):
         label = f"seed-{seed}" if seed is not None else "deterministic"
-        output = _evaluation_output_dir(
+        output = evaluation_dir(
             config, arm, seed=seed, split=split, round_index=effective_round
         )
         summary_path = output / "summary.json"
@@ -166,7 +164,7 @@ def _sweep_arm(
 
 
 def command_evaluate_arm(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     arm = args.arm.upper()
     accuracies = _sweep_arm(
         config, arm, split=args.split, round_index=args.round, force=args.force
@@ -176,7 +174,7 @@ def command_evaluate_arm(args: argparse.Namespace) -> None:
 
 
 def command_evaluate_all(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     means: dict[str, float] = {}
     for arm in sorted(ARMS):
         accuracies = _sweep_arm(
@@ -189,7 +187,7 @@ def command_evaluate_all(args: argparse.Namespace) -> None:
 
 
 def command_evaluate(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
+    config = seal_config(args.config)
     arm = args.arm.upper()
     family = ARMS[arm].checkpoint_family
     if family == "base" and args.seed is not None:
@@ -202,17 +200,11 @@ def command_evaluate(args: argparse.Namespace) -> None:
         raise ValueError("--round is only valid for F0/F1/F2")
     seed = None if family == "base" else args.seed
     bundle, before_client = _load_arm_checkpoint(config, arm, seed, args.round)
-    clients = load_partition(_data_root(config), expected_config_hash=config.hash)
+    clients = load_partition(data_root(config), expected_config_hash=config.hash)
     prior_path = args.subject_weights
     if arm == "F2" and prior_path is None:
-        selected = args.round or _selected_round(config)
-        prior_path = str(
-            Path(config.experiment.output_dir)
-            / "priors"
-            / config.data.dataset
-            / f"seed-{seed}"
-            / f"round-{selected}.json"
-        )
+        selected = args.round or selected_round(config)
+        prior_path = str(priors_path(config, seed=seed, round_index=selected))
     priors = read_priors(prior_path) if prior_path else None
     summary = evaluate_arm(
         bundle,
@@ -220,7 +212,7 @@ def command_evaluate(args: argparse.Namespace) -> None:
         clients,
         arm=arm,
         split=args.split,
-        output_dir=_evaluation_output_dir(
+        output_dir=evaluation_dir(
             config, arm, seed=seed, split=args.split, round_index=args.round
         ),
         seed=seed,
@@ -231,8 +223,8 @@ def command_evaluate(args: argparse.Namespace) -> None:
 
 
 def command_report(args: argparse.Namespace) -> None:
-    config = _seal_config(args.config)
-    root = Path(config.experiment.output_dir) / "evaluations" / config.data.dataset
+    config = seal_config(args.config)
+    root = arms_root(config)
     arm_predictions: dict[str, dict[int | None, Any]] = {}
     for arm in ARMS:
         family = ARMS[arm].checkpoint_family
@@ -252,7 +244,7 @@ def command_report(args: argparse.Namespace) -> None:
         confidence=config.evaluation.confidence_level,
         bootstrap_seed=config.experiment.data_seed,
     )
-    output = Path(config.experiment.output_dir) / "reports" / config.data.dataset / "contrasts.json"
+    output = report_path(config)
     write_contrast_report(output, report)
     print(f"Wrote primary contrast report to {output}")
 

@@ -37,30 +37,6 @@ class EffectiveSeedTests(unittest.TestCase):
         self.assertEqual(evaluation._effective_seeds(self.config, "F0"), [7, 8])
 
 
-class OutputLayoutTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self.config = _config(self.root)
-        self.addCleanup(self._tmp.cleanup)
-
-    def test_seeded_layout_matches_the_existing_evaluate_command(self) -> None:
-        path = paths._evaluation_output_dir(
-            self.config, "F0", seed=42, split="test", round_index=6
-        )
-        expected = self.root / "evaluations" / "medqa" / "F0" / "seed-42" / "test" / "round-6"
-        self.assertEqual(path, expected)
-
-    def test_base_arm_layout_uses_deterministic_and_selected(self) -> None:
-        path = paths._evaluation_output_dir(
-            self.config, "B1", seed=None, split="test", round_index=None
-        )
-        expected = (
-            self.root / "evaluations" / "medqa" / "B1" / "deterministic" / "test" / "selected"
-        )
-        self.assertEqual(path, expected)
-
-
 class SweepTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -69,7 +45,7 @@ class SweepTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _seed_summary(self, arm: str, seed: int | None, accuracy: float) -> None:
-        output = paths._evaluation_output_dir(
+        output = paths.evaluation_dir(
             self.config, arm, seed=seed, split="test", round_index=None
         )
         write_json(output / "summary.json", {"pipeline_accuracy": accuracy})

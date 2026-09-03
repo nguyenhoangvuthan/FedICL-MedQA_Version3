@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from .audit import audit_retrieval_cohort
+from .auth import apply_hf_token, find_token_file
 from .checkpointing import CheckpointManager
 from .config import Config
 from .data import (
@@ -243,6 +245,123 @@ def _load_arm_checkpoint(
     return bundle, None
 
 
+def _effective_seeds(config: Config, arm: str) -> list[int | None]:
+    """Seeds an arm is actually evaluated over.
+
+    Base arms (B0/B1) do not consume a trained checkpoint, so every seed would produce
+    an identical result; they run exactly once and record no seed. Every other family
+    runs once per configured training seed.
+    """
+    if ARMS[arm].checkpoint_family == "base":
+        return [None]
+    return list(config.experiment.training_seeds)
+
+
+def _evaluation_output_dir(
+    config: Config, arm: str, *, seed: int | None, split: str, round_index: int | None
+) -> Path:
+    return (
+        Path(config.experiment.output_dir)
+        / "evaluations"
+        / config.data.dataset
+        / arm
+        / (f"seed-{seed}" if seed is not None else "deterministic")
+        / split
+        / (f"round-{round_index}" if round_index is not None else "selected")
+    )
+
+
+def _run_single_evaluation(
+    config: Config,
+    arm: str,
+    *,
+    seed: int | None,
+    split: str,
+    round_index: int | None,
+    subject_weights: str | None = None,
+) -> dict[str, Any]:
+    bundle, before_client = _load_arm_checkpoint(config, arm, seed, round_index)
+    clients = load_partition(_data_root(config), expected_config_hash=config.hash)
+    prior_path = subject_weights
+    if arm == "F2" and prior_path is None:
+        selected = round_index or _selected_round(config)
+        prior_path = str(
+            Path(config.experiment.output_dir)
+            / "priors"
+            / config.data.dataset
+            / f"seed-{seed}"
+            / f"round-{selected}.json"
+        )
+    priors = read_priors(prior_path) if prior_path else None
+    return evaluate_arm(
+        bundle,
+        config,
+        clients,
+        arm=arm,
+        split=split,
+        output_dir=_evaluation_output_dir(
+            config, arm, seed=seed, split=split, round_index=round_index
+        ),
+        seed=seed,
+        before_client=before_client,
+        subject_weights=priors,
+    )
+
+
+def _sweep_arm(
+    config: Config, arm: str, *, split: str, round_index: int | None, force: bool
+) -> list[float]:
+    """Evaluate one arm over its effective seed set, skipping completed runs.
+
+    evaluate_arm writes summary.json last, after predictions.jsonl, so its presence
+    marks a run that finished rather than one that was interrupted part-way.
+    """
+    # --round only means anything for the federated family; ignore it elsewhere so a
+    # single evaluate-all invocation can carry the flag without failing on B0/L0/C0.
+    effective_round = round_index if ARMS[arm].checkpoint_family == "federated" else None
+    accuracies: list[float] = []
+    for seed in _effective_seeds(config, arm):
+        label = f"seed-{seed}" if seed is not None else "deterministic"
+        output = _evaluation_output_dir(
+            config, arm, seed=seed, split=split, round_index=effective_round
+        )
+        summary_path = output / "summary.json"
+        if summary_path.exists() and not force:
+            accuracy = float(read_json(summary_path)["pipeline_accuracy"])
+            print(f"{arm} {label} {split}: skip, already evaluated, accuracy {accuracy:.6f}")
+        else:
+            summary = _run_single_evaluation(
+                config, arm, seed=seed, split=split, round_index=effective_round
+            )
+            accuracy = float(summary["pipeline_accuracy"])
+            print(f"{arm} {label} {split}: pipeline accuracy {accuracy:.6f}")
+        accuracies.append(accuracy)
+    return accuracies
+
+
+def command_evaluate_arm(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    arm = args.arm.upper()
+    accuracies = _sweep_arm(
+        config, arm, split=args.split, round_index=args.round, force=args.force
+    )
+    mean = sum(accuracies) / len(accuracies)
+    print(f"{arm} {args.split} mean over {len(accuracies)} run(s): {mean:.6f}")
+
+
+def command_evaluate_all(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    means: dict[str, float] = {}
+    for arm in sorted(ARMS):
+        accuracies = _sweep_arm(
+            config, arm, split=args.split, round_index=args.round, force=args.force
+        )
+        means[arm] = sum(accuracies) / len(accuracies)
+    print(f"\n{args.split} pipeline accuracy by arm")
+    for arm, mean in means.items():
+        print(f"  {arm}: {mean:.6f}")
+
+
 def command_evaluate(args: argparse.Namespace) -> None:
     config = _seal_config(args.config)
     arm = args.arm.upper()
@@ -269,23 +388,15 @@ def command_evaluate(args: argparse.Namespace) -> None:
             / f"round-{selected}.json"
         )
     priors = read_priors(prior_path) if prior_path else None
-    round_suffix = f"round-{args.round}" if args.round is not None else "selected"
-    output = (
-        Path(config.experiment.output_dir)
-        / "evaluations"
-        / config.data.dataset
-        / arm
-        / (f"seed-{seed}" if seed is not None else "deterministic")
-        / args.split
-        / round_suffix
-    )
     summary = evaluate_arm(
         bundle,
         config,
         clients,
         arm=arm,
         split=args.split,
-        output_dir=output,
+        output_dir=_evaluation_output_dir(
+            config, arm, seed=seed, split=args.split, round_index=args.round
+        ),
         seed=seed,
         before_client=before_client,
         subject_weights=priors,
@@ -407,8 +518,15 @@ def command_doctor(args: argparse.Namespace) -> None:
         missing = [name for name, version in packages.items() if version == "missing"]
         raise RuntimeError(f"missing runtime packages: {', '.join(missing)}")
 
+    token_file = find_token_file()
     report: dict[str, Any] = {
         "packages": packages,
+        # Presence and origin only. The token value must never be printed or written
+        # to any artifact, since this project hashes and seals its provenance records.
+        "hf_token": {
+            "source": apply_hf_token(),
+            "file": str(token_file) if token_file else None,
+        },
         "model": config.model.id,
         "dtype": config.model.dtype,
         "attention": config.model.attention,
@@ -435,17 +553,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fedicl-mqa")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    prepare = subparsers.add_parser("prepare-data", help="download, normalize and partition data")
+    # Shared so --gpu can be written after the subcommand rather than before it.
+    gpu = argparse.ArgumentParser(add_help=False)
+    gpu.add_argument(
+        "--gpu",
+        type=int,
+        choices=[0, 1],
+        help="run on this physical GPU; leaves the sealed config hash untouched",
+    )
+
+    prepare = subparsers.add_parser(
+        "prepare-data", parents=[gpu], help="download, normalize and partition data"
+    )
     prepare.add_argument("--config", required=True)
     prepare.set_defaults(func=command_prepare_data)
 
     audit = subparsers.add_parser(
-        "audit-retrieval", help="verify Top-5 capacity and freeze candidate manifests"
+        "audit-retrieval",
+        parents=[gpu],
+        help="verify Top-5 capacity and freeze candidate manifests",
     )
     audit.add_argument("--config", required=True)
     audit.set_defaults(func=command_audit_retrieval)
 
-    training = subparsers.add_parser("train", help="train Local, Federated or Central LoRA")
+    training = subparsers.add_parser(
+        "train", parents=[gpu], help="train Local, Federated or Central LoRA"
+    )
     training.add_argument("--config", required=True)
     training.add_argument("--mode", choices=["local", "federated", "centralized"], required=True)
     seed_group = training.add_mutually_exclusive_group(required=True)
@@ -455,7 +588,7 @@ def build_parser() -> argparse.ArgumentParser:
     training.add_argument("--resume", default="auto")
     training.set_defaults(func=command_train)
 
-    evaluate = subparsers.add_parser("evaluate", help="run one baseline arm")
+    evaluate = subparsers.add_parser("evaluate", parents=[gpu], help="run one baseline arm")
     evaluate.add_argument("--config", required=True)
     evaluate.add_argument("--arm", choices=sorted(ARMS), required=True)
     evaluate.add_argument("--seed", type=int)
@@ -464,21 +597,54 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--subject-weights")
     evaluate.set_defaults(func=command_evaluate)
 
-    select = subparsers.add_parser("select-round", help="select FL round using validation only")
+    select = subparsers.add_parser(
+        "select-round", parents=[gpu], help="select FL round using validation only"
+    )
     select.add_argument("--config", required=True)
     select.set_defaults(func=command_select_round)
 
-    priors = subparsers.add_parser("build-priors", help="build F2 leave-one-client-out prior")
+    priors = subparsers.add_parser(
+        "build-priors", parents=[gpu], help="build F2 leave-one-client-out prior"
+    )
     priors.add_argument("--config", required=True)
     priors.add_argument("--seed", type=int, required=True)
     priors.add_argument("--round", type=int, choices=[4, 6, 8])
     priors.set_defaults(func=command_build_priors)
 
-    report = subparsers.add_parser("report", help="bootstrap the six primary contrasts")
+    report = subparsers.add_parser(
+        "report", parents=[gpu], help="bootstrap the six primary contrasts"
+    )
     report.add_argument("--config", required=True)
     report.set_defaults(func=command_report)
 
-    doctor = subparsers.add_parser("doctor", help="check the local GPU and ML dependencies")
+    sweep = subparsers.add_parser(
+        "evaluate-arm",
+        parents=[gpu],
+        help="evaluate one arm across every configured seed on the test split",
+    )
+    sweep.add_argument("--config", required=True)
+    sweep.add_argument("--arm", choices=sorted(ARMS), required=True)
+    sweep.add_argument("--split", choices=["validation", "test"], default="test")
+    sweep.add_argument("--round", type=int, choices=[4, 6, 8])
+    sweep.add_argument("--force", action="store_true", help="re-run evaluations already on disk")
+    sweep.set_defaults(func=command_evaluate_arm)
+
+    sweep_all = subparsers.add_parser(
+        "evaluate-all",
+        parents=[gpu],
+        help="evaluate every arm across every configured seed on the test split",
+    )
+    sweep_all.add_argument("--config", required=True)
+    sweep_all.add_argument("--split", choices=["validation", "test"], default="test")
+    sweep_all.add_argument("--round", type=int, choices=[4, 6, 8])
+    sweep_all.add_argument(
+        "--force", action="store_true", help="re-run evaluations already on disk"
+    )
+    sweep_all.set_defaults(func=command_evaluate_all)
+
+    doctor = subparsers.add_parser(
+        "doctor", parents=[gpu], help="check the local GPU and ML dependencies"
+    )
     doctor.add_argument("--config", required=True)
     doctor.set_defaults(func=command_doctor)
     return parser
@@ -488,6 +654,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        # Restrict the process to one GPU before anything creates a CUDA context. The
+        # selected device then appears as cuda:0, so config.hardware.device stays the
+        # literal string "cuda" and the sealed config hash is unaffected.
+        if getattr(args, "gpu", None) is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+        # Authenticate before any command reaches the Hub. Every Hub client in this
+        # project reads the token from the environment, so this single call covers
+        # model, dataset and encoder downloads alike.
+        apply_hf_token()
         args.func(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         parser.error(str(exc))

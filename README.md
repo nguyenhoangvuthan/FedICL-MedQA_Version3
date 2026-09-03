@@ -58,6 +58,57 @@ source .venv/bin/activate
 uv sync --extra dev
 ```
 
+On Windows Server, activate the environment with PowerShell instead:
+
+```powershell
+uv venv --python 3.12
+.venv\Scripts\Activate.ps1
+uv sync --extra dev
+```
+
+The shell scripts under `scripts/` are bash-only. Every step they perform is also
+available as a CLI subcommand, which runs unchanged on Windows.
+
+## Hugging Face authentication
+
+Put the access token in a single-line file named `HF_Access_Token.txt` in the repository
+root. The file is git-ignored and read automatically by every command.
+
+```powershell
+Set-Content -Path HF_Access_Token.txt -Value 'hf_xxx' -NoNewline -Encoding utf8
+```
+
+The file takes precedence over `HF_TOKEN` in the environment, so a stale machine-scope
+variable cannot silently shadow it. A token is optional: the default datasets and models
+are public, and commands fall back to anonymous access. `fedicl-mqa doctor` reports which
+source was used without printing the token.
+
+## Selecting a GPU
+
+Pass `--gpu 0` or `--gpu 1` to any subcommand. The flag restricts the process to that
+device via `CUDA_VISIBLE_DEVICES`, leaving `hardware.device` in the config untouched so
+the sealed configuration hash still matches. Editing `hardware.device` in the YAML to
+pick a GPU would change the hash and invalidate prepared data and existing checkpoints.
+
+## Evaluating arms
+
+`evaluate-arm` runs one arm across every configured training seed on the test split:
+
+```bash
+fedicl-mqa evaluate-arm --config outputs/a5000/sealed_config.json --arm B1 --gpu 1
+```
+
+Seeds come from `experiment.training_seeds`. B0 and B1 do not consume a trained
+checkpoint, so they run once and are recorded under `deterministic/` rather than per
+seed. `evaluate-all` sweeps all eight arms the same way:
+
+```bash
+fedicl-mqa evaluate-all --config outputs/a5000/sealed_config.json --gpu 1
+```
+
+Both commands skip any evaluation whose `summary.json` already exists, so an interrupted
+sweep resumes where it stopped. Pass `--force` to re-run everything.
+
 Confirm the GPU before a full run:
 
 ```bash

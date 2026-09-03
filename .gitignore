@@ -1,5 +1,6 @@
 # Secrets — never commit
 HF_Access_Token.txt
+HF_Access_Token
 *.env
 .env.*
 

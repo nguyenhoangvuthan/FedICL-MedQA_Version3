@@ -2,9 +2,9 @@
 
 **Status:** Thiết kế đã chốt để lập implementation plan
 
-**Ngày:** 2026-09-01
+**Ngày:** 2026-09-01 · **Cập nhật:** 2026-09-03
 
-**Phạm vi:** Medical multiple-choice question answering bằng Small Language Model, LoRA, Federated Learning và In-Context Learning.
+**Phạm vi:** Text-only medical QA được đánh giá thống nhất dưới dạng four-way answer selection bằng Small Language Model, LoRA, Federated Learning và In-Context Learning.
 
 ## 1. Mục tiêu thực nghiệm
 
@@ -22,12 +22,14 @@ Toàn bộ so sánh phải tách được ảnh hưởng của training, federat
 
 - Bài toán hiện tại là **text-only medical QA**.
 - Loại hoàn toàn mục **Multimodal Representation Learning** khỏi proposed approach, experimental plan và contribution hiện tại.
-- Toàn bộ evaluation chạy trên **native four-way multiple-choice answer selection**: MedQA và MedMCQA, dùng option gốc của dataset. Không có track constructed MCQ và không có dataset free-text.
-- Giữ official train/validation/test split trước khi tạo client partition.
+- Evaluation chính chạy trên **four-way multiple-choice answer selection**, gồm:
+  - **Native MCQ:** MedQA và MedMCQA, dùng option gốc của dataset.
+  - **Constructed 4-way MCQ:** chuyển các item tự luận đủ điều kiện của MedQuAD thành câu hỏi bốn lựa chọn theo mục 5.
+- Với MedQA và MedMCQA, giữ official train/validation/test split trước khi tạo client partition. Với MedQuAD, tạo và freeze split theo source/provenance group trước khi client partition và trước khi sinh distractor.
 - Chỉ dùng **một local dense retriever** cho tất cả arm có retrieval.
 - Mỗi prompt ICL có đúng `k = 5` exemplar hợp lệ.
 - Exemplar chỉ được lấy từ repository tạo từ training split; validation và test không bao giờ là nguồn exemplar.
-- Kết quả **không** được dùng để claim năng lực open-ended QA. Quy tắc phát ngôn ở mục 7.6.
+- Kết quả trên constructed MedQuAD **không** được dùng để claim năng lực open-ended QA nguyên bản. Quy tắc phát ngôn ở mục 8.6.
 
 ## 3. Single closure-constrained local retriever
 
@@ -78,7 +80,7 @@ Không cấm một exemplar chỉ vì nó liên quan cùng chủ đề y khoa. M
 3. Nếu còn ít hơn năm exemplar, mở rộng lần lượt đến top-100 và toàn bộ local support repository.
 4. Chọn đúng năm exemplar hợp lệ.
 5. Nếu không đủ năm, đánh dấu capacity failure; không tự giảm `k` và không lấy dữ liệu từ client khác, validation hoặc test.
-6. Trước khi seal cohort, refill từ training reserve pool hoặc loại query; báo cáo exclusion rate và lý do.
+6. Trước khi khóa evaluation subset, refill từ training reserve pool hoặc loại query; báo cáo exclusion rate và lý do.
 7. Retriever chỉ encode `question + answer options`; không được thấy gold label của query.
 
 ## 4. Data contract chống overfitting và leakage
@@ -110,7 +112,70 @@ Ngoài kiểm tra ID, phải kiểm tra disjointness ở các mức:
 
 Validation và test query vẫn được phép retrieve exemplar, nhưng exemplar của chúng chỉ đến từ `D_i^{support}` thuộc training split. Không dùng test để chọn `k`, duplicate threshold, prompt, checkpoint, retriever setting hoặc re-ranking weight.
 
-## 5. Baseline arms
+## 5. Constructed 4-way MedQuAD benchmark
+
+MedQuAD gốc là dataset question-answer tự luận. Chỉ các item có **một đáp án ngắn, xác định và có thể biểu diễn bằng một lựa chọn duy nhất** mới được chuyển thành MCQ. Mục tiêu là dùng cùng evaluator accuracy cho native MCQ và dữ liệu bắt nguồn từ tự luận mà không cần LLM-as-a-judge.
+
+Việc chuyển đổi là một bước **xây dựng benchmark offline**. Benchmark phải được tạo, audit và freeze trước khi chạy prediction của bất kỳ arm nào.
+
+### 5.1 Định nghĩa chuyển đổi
+
+Từ cặp gốc $(q,a^*)$, tạo một item:
+
+$$
+(q,\{a^*,d_1,d_2,d_3\}),
+$$
+
+trong đó:
+
+- $a^*$ là đáp án đúng lấy từ reference answer của MedQuAD;
+- $d_1,d_2,d_3$ là ba **distractor**: các phương án cùng loại và hợp lý trong ngữ cảnh y khoa, nhưng sai đối với câu hỏi đang xét.
+
+Bốn candidate được xáo trộn thành A/B/C/D với vị trí gold cân bằng trên toàn evaluation subset. Khi inference, model **được nhìn thấy cả bốn option**, sinh final-answer text, rồi matcher ánh xạ text đó về A/B/C/D đúng như native MCQ ở mục 8.1.
+
+### 5.2 Eligibility filter
+
+Không chuyển toàn bộ MedQuAD. Một item chỉ đủ điều kiện khi qua cả automatic pre-filter và human audit:
+
+- Câu hỏi yêu cầu một single-best answer, không yêu cầu giải thích mở, danh sách hoặc nhiều điều kiện đồng thời.
+- Reference answer có thể chuẩn hóa thành một khái niệm y khoa hoặc một fact ngắn, tối đa 20 word-token sau normalization.
+- Gold answer có answer type xác định được, ví dụ bệnh, thuốc, vitamin, xét nghiệm, thủ thuật hoặc triệu chứng.
+- Không có hai cách trả lời khác nhau nhưng đều đúng theo thông tin trong source.
+
+Danh sách question type đủ điều kiện và normalization rule được kiểm tra chỉ trên train/validation, sau đó freeze trước khi mở test; giới hạn 20 word-token ở trên không được nới sau khi xem test. Mục tiêu ban đầu là một **constructed evaluation subset 300–500 item**; báo cáo đầy đủ số item trước filter, sau filter, sau audit và exclusion rate.
+
+### 5.3 Distractor construction
+
+- Ưu tiên retrieve distractor từ answer pool thuộc **training split**; validation/test answer không được dùng làm distractor cho item khác.
+- Match theo question type và answer semantic type khi metadata cho phép: bệnh–bệnh, thuốc–thuốc, xét nghiệm–xét nghiệm.
+- Chọn distractor liên quan đủ để không quá dễ nhưng khác biệt đủ để chỉ có một đáp án đúng.
+- Loại synonym, alias, paraphrase, đáp án bao hàm gold, đáp án bị gold bao hàm, hoặc bất kỳ candidate nào cũng có thể đúng.
+- Kiểm soát surface cue như độ dài, capitalization và kiểu diễn đạt; không để gold nổi bật chỉ vì hình thức.
+- Cân bằng vị trí gold A/B/C/D bằng data seed cố định.
+- Dùng một frozen encoder cho retrieval offline. Đây là bước của benchmark builder, không tạo thêm retriever runtime: kiến trúc inference vẫn chỉ có single retriever ở mục 3.
+- Tạo đúng một candidate manifest dùng chung cho mọi arm; không chỉnh distractor sau khi xem model prediction.
+
+### 5.4 Human audit và độ tin cậy
+
+- Với evaluation subset 300–500 item, audit thủ công toàn bộ item cuối cùng.
+- Hai annotator có năng lực đọc hiểu y khoa kiểm tra: câu hỏi có single-best answer, gold đúng, ba distractor sai nhưng hợp lý, và không có cue hình thức rõ ràng.
+- Báo agreement giữa annotator, tỷ lệ item phải sửa, tỷ lệ item bị loại và nguyên nhân.
+- Item còn tranh chấp sau adjudication phải bị loại trước khi seal manifest.
+- Trên một subset đã định trước, tạo thêm ít nhất một distractor manifest thay thế để kiểm tra độ nhạy. Nếu thứ hạng arm đổi, kết luận phải ghi rõ phụ thuộc distractor set.
+
+### 5.5 Ranh giới leakage
+
+Gold answer của chính test item được dùng làm option đúng vì đây là benchmark construction, không phải model training. Tuy nhiên:
+
+- Constructed test item không được đưa vào LoRA training hoặc support repository.
+- Validation/test không được dùng làm exemplar, nguồn huấn luyện retriever hoặc nguồn distractor cho item khác.
+- Không dùng prediction của model để chọn, sửa hoặc loại distractor.
+- Không tạo manifest riêng cho từng arm.
+- Query và exemplar vẫn phải disjoint theo ID, normalized text, near-duplicate cluster và provenance như mục 4.
+
+Metric phải luôn được gọi đầy đủ là **constructed MedQuAD 4-way answer-selection accuracy**, không gọi tắt là “MedQuAD accuracy”. Nó đo answer selection trên benchmark được chuyển đổi, không đo trực tiếp native open-ended QA.
+
+## 6. Baseline arms
 
 | Arm | Training | Inference context | Mục đích |
 |---|---|---|---|
@@ -125,7 +190,7 @@ Validation và test query vẫn được phép retrieve exemplar, nhưng exempla
 
 Vai trò theo ba main baseline: **C0** = Centralized SLM, **F0** = Federated SLM without ICL, **L1** = Non-federated ICL (B1 là biến thể training-free của cùng baseline đó). **F2** là phương pháp đề xuất; **F1** là ablation bắt buộc để tách đóng góp của re-ranking khỏi đóng góp của ICL. **B0** và **L0** là floor tương ứng của B1 và L1, giữ lại vì cần thiết để đọc hai contrast ICL.
 
-### 5.1 Client-aware re-ranking
+### 6.1 Client-aware re-ranking
 
 F2 không tạo retriever thứ hai. F2 lấy candidate từ đúng single retriever của F1 và chỉ thay ranking score:
 
@@ -138,13 +203,13 @@ $$
 
 Các trọng số `alpha`, `beta`, `gamma` chỉ được chọn bằng training/validation workflow và phải freeze trước test.
 
-### 5.2 Seed và determinism policy
+### 6.2 Seed và determinism policy
 
-Tách hai loại randomness. Nhầm lẫn giữa chúng làm hỏng toàn bộ contrast ở mục 6.
+Tách hai loại randomness. Nhầm lẫn giữa chúng làm hỏng toàn bộ contrast ở mục 7.
 
-**Data seed — cố định, dùng chung cho mọi arm.** Một seed duy nhất chi phối client partition, tách `fit`/`support` và near-duplicate clustering. Seed này freeze một lần trước mọi arm và **không bao giờ biến thiên theo arm**: nếu nó đổi giữa các arm thì mọi $\Delta$ bị confound bởi khác biệt dữ liệu chứ không phải khác biệt phương pháp.
+**Data seed — cố định, dùng chung cho mọi arm.** Một seed duy nhất chi phối client partition, tách `fit`/`support`, near-duplicate clustering, distractor selection và gold-position balancing. Seed này freeze một lần trước mọi arm và **không bao giờ biến thiên theo arm**: nếu nó đổi giữa các arm thì mọi $\Delta$ bị confound bởi khác biệt dữ liệu chứ không phải khác biệt phương pháp. Vì chỉ dùng một data seed, kết luận chính là conditional trên partition đã freeze; độ nhạy theo partition phải là experiment riêng, không được trộn với training-seed variance.
 
-**Training seed — biến thiên, paired ID giữa các arm.** Chi phối LoRA init, data order, dropout và client sampling mỗi round. Seed $s$ của arm A phải khớp seed $s$ của arm B trong mọi contrast có training.
+**Training seed — biến thiên, paired ID giữa các arm.** Chi phối LoRA init, data order và dropout. Protocol hiện tại dùng full participation nên không có randomness do client sampling. Seed $s$ của arm A phải khớp seed $s$ của arm B trong mọi contrast có training.
 
 | Arm | Loại | Training seed | Ghi chú |
 |---|---|---|---|
@@ -153,7 +218,9 @@ Tách hai loại randomness. Nhầm lẫn giữa chúng làm hỏng toàn bộ c
 | **F0** → **F1**, **F2** | Trained | $s\in\{1,2,3\}$, paired ID với L0 và C0 | F1/F2 dùng lại checkpoint F0 của cùng $s$ |
 | **C0** | Trained | $s\in\{1,2,3\}$, paired ID với F0 | |
 
-Ba training seed là mức tối thiểu để có hierarchical bootstrap; nếu compute cho phép, nâng lên năm cho các headline arm và giữ ba cho ablation. Số seed thực dùng phải ghi trong mọi bảng kết quả.
+Ba training seed là mức tối thiểu theo compute plan nhưng chỉ cho ước lượng thô về run-to-run variance; nếu compute cho phép, nâng lên năm cho các headline arm và giữ ba cho ablation. Số seed thực dùng phải ghi trong mọi bảng kết quả.
+
+Paired seed ID chỉ đồng bộ những random stream có ý nghĩa tương ứng giữa hai arm, đặc biệt là LoRA initialization. Nó không làm cho batch order của Local, Federated và Centralized trở thành giống hệt nhau vì topology huấn luyện khác nhau. Mọi kết luận với ba seed vẫn mang tính exploratory.
 
 **Determinism tại inference — áp dụng cho mọi arm:**
 
@@ -161,30 +228,30 @@ Ba training seed là mức tối thiểu để có hierarchical bootstrap; nếu
 - Encoder revision, index build và query đều pin và deterministic.
 - Với mỗi cặp arm dùng chung checkpoint, khác biệt output phải thuần do inference context.
 
-**Hệ quả cho thống kê ở mục 7.5:**
+**Hệ quả cho thống kê ở mục 8.5:**
 
 - $\Delta_{Base\text{-}ICL}$: cả hai arm inference-only, không có seed → paired item bootstrap thuần.
 - $\Delta_{Local\text{-}ICL}$, $\Delta_{FL\text{-}ICL}$, $\Delta_{ClientAware}$: chung checkpoint nhưng có training seed → hierarchical paired bootstrap qua seed-pair và item.
 - $\Delta_{FL}$, $\Delta_{Central}$, $\Delta_{System}$: hai checkpoint khác nhau → hierarchical paired bootstrap, bắt buộc paired seed ID.
 
-### 5.3 Training contract
+### 6.3 Training contract
 
 **Trạng thái: đã chốt.** Chỉ `R` còn được chọn trên validation trong search space đã khóa dưới đây; mọi giá trị khác cố định trước khi chạy.
 
 | Tham số | Giá trị | Lý do |
 |---|---|---|
 | `N` client | 5 | Gộp subject label thành 5 cụm chuyên khoa; khớp thiết kế trước |
-| `fit:support` | MedQA **70:30** · MedMCQA **80:20** | Cân giữa sức mạnh training và độ dày kho exemplar |
+| `fit:support` | MedQA **70:30** · MedMCQA **80:20** · constructed MedQuAD **80:20** | Cân giữa sức mạnh training và độ dày kho exemplar |
 | LoRA `r` | 16 | Chuẩn cho SLM; giữ payload ~15–30 MB/round |
 | LoRA alpha / dropout | 32 / 0.05 | Khóa giống hệt giữa L0, F0, C0 |
 | Local epochs `E` | 1 | Giảm client drift dưới non-IID |
-| FL rounds `R` | search {4, 6, 8}, chọn trên validation | Chính là đại lượng $R_{90}$ ở mục 7.3 đo |
-| C0 epochs | $R \times E$ của $R$ thắng cuộc | Khớp target exposures với F0 |
-| Training seeds | 3 giá trị: **42, 43, 44** | 21 training run tổng cộng |
+| FL rounds `R` | search {4, 6, 8}, chọn trên validation | Chọn training horizon; khác với diagnostic $R_{90}$ ở mục 8.3 |
+| C0 epochs | $R^* \times E$ với $R^*$ chọn trên validation | Khớp target exposures với F0 |
+| Training seeds | 3 giá trị: **42, 43, 44** | 21 final training trajectory cho mỗi dataset |
 
-Số training run: $(N + 1 + 1)\times 3 = 21$ — Local sinh $N$ checkpoint mỗi seed, FedAvg và Centralized mỗi arm một checkpoint mỗi seed.
+Số final training trajectory cho mỗi dataset: $(N + 1 + 1)\times 3 = 21$ — Local sinh $N$ checkpoint mỗi seed, FedAvg và Centralized mỗi arm một checkpoint mỗi seed. Với ba dataset, tổng là 63 final trajectory, chưa tính pilot hoặc hyperparameter scouting. F0 có thể chạy đến round 8 một lần mỗi seed và coi checkpoint round 4/6/8 là ba candidate của cùng trajectory.
 
-Danh sách seed phải **giống hệt nhau** giữa L0, F0 và C0 để paired seed ID ở mục 5.2 thi hành được. Giá trị cụ thể của seed không quan trọng; điều quan trọng là cùng một danh sách và được ghi lại.
+Danh sách seed phải **giống hệt nhau** giữa L0, F0 và C0 để paired seed ID ở mục 6.2 thi hành được. Giá trị cụ thể của seed không quan trọng; điều quan trọng là cùng một danh sách và được ghi lại.
 
 **Kiến trúc LoRA khóa chung.** `r`, alpha, dropout và target modules giống hệt nhau giữa L0, F0 và C0. Khác một tham số nào trong nhóm này thì $\Delta_{FL}$ và $\Delta_{Central}$ không còn đo protocol nữa mà đo kiến trúc.
 
@@ -202,13 +269,13 @@ Danh sách seed phải **giống hệt nhau** giữa L0, F0 và C0 để paired 
 - `total_optimizer_updates` — tổng số bước cập nhật tham số.
 - `effective_batch_size`.
 
-C0 khớp F0 ở **`total_target_exposures`** bằng cách train $R\times E$ epoch trên union các `fit` set. Hai đại lượng còn lại **không** khớp đồng thời được — C0 train trên tập lớn gấp $N$ lần nên số optimizer step mỗi epoch cao hơn — và báo cáo phải nói rõ khớp ở đại lượng nào.
+C0 khớp F0 ở **`total_target_exposures`** bằng cách train $R\times E$ epoch trên union các `fit` set. Tổng optimizer update có thể xấp xỉ bằng tổng local update cộng qua mọi client nếu batch size và drop-last policy tương thích, nhưng update trajectory và effective batch composition vẫn khác. Báo cáo số đo thực tế, không suy ra chúng chỉ từ công thức epoch.
 
-**Ngân sách tuning bằng nhau.** Central và FL dùng cùng số lượng cấu hình thử trên validation. Không được tune FL kỹ hơn Central rồi kết luận về $\Delta_{Central}$.
+**Ngân sách tuning có thể đối chiếu.** Các hyperparameter dùng chung của Central và FL nhận cùng search space và ngân sách validation. `R` chỉ áp dụng cho FL; C0 dùng $R\times E$ epoch theo $R$ đã chọn để khớp target exposure. Không được tune FL kỹ hơn Central trên các tham số dùng chung rồi kết luận về $\Delta_{Central}$.
 
-**Early stopping.** Tiêu chí trên validation cho mọi arm trained; với FL, "early stopping" chính là việc chọn $R$ trong search space, và phải chọn xong trước khi chạm test.
+**Checkpoint selection.** Không dùng test để early-stop. L0 chạy đúng $E=1$ local epoch. F0 chạy đến round 8 và chọn một checkpoint trong `{4,6,8}` bằng validation; gọi round được chọn là $R^*$, không phải $R_{90}$. C0 sau đó chạy đúng $R^*\times E$ epoch để khớp target exposure. Mọi ngoại lệ phải được preregister bằng một validation rule dùng nhất quán.
 
-## 6. Primary contrasts
+## 7. Primary contrasts
 
 $$
 \Delta_{Base\text{-}ICL}=Acc(B1)-Acc(B0)
@@ -247,20 +314,20 @@ $$
 $\Delta_{Central}$ không phải primary contrast, không nằm trong correction family, và **không** có pass/fail gate. Ba ràng buộc khi báo cáo nó:
 
 - **Gọi đúng estimand.** C0 và F0 khác nhau ở *pooled optimization so với full FedAvg protocol* — số optimizer step, batch composition và tính liên tục của optimizer state đều khác — chứ không phải "chỉ khác bước aggregation".
-- **Kèm matched-compute accounting.** Báo số optimizer step, số lần model nhìn thấy mỗi example, và wall-clock của cả hai arm theo mục 7.3. Không có các con số này thì $\Delta_{Central}$ không diễn giải được.
+- **Kèm matched-compute accounting.** Báo số optimizer step, số lần model nhìn thấy mỗi example, và wall-clock của cả hai arm theo mục 8.3. Không có các con số này thì $\Delta_{Central}$ không diễn giải được.
 - **Không gọi C0 là upper bound trước khi đo.** Centralized không được đảm bảo thắng federated, nhất là ở quy mô client nhỏ và dữ liệu non-IID.
 
 C0 không có ICL counterpart, nên hiệu ứng ICL trong chế độ centralized là **unmeasured**; nêu rõ điều này ở Limitations thay vì suy diễn từ $\Delta_{FL\text{-}ICL}$.
 
 Các contrast ICL phải dùng paired predictions trên cùng test items. B0/B1, L0/L1 và F0/F1/F2 phải dùng cùng checkpoint tương ứng để không trộn ảnh hưởng của training với ảnh hưởng của inference context.
 
-Mọi contrast được tính **riêng cho từng dataset** (MedQA, MedMCQA). Khi cần một con số tổng hợp, macro-average các $\Delta$ qua dataset theo mục 7.4.
+Mọi contrast được tính **riêng cho từng dataset** (native MedQA, native MedMCQA, constructed MedQuAD). Khi cần một con số tổng hợp, macro-average các $\Delta$ qua dataset theo mục 8.4.
 
-## 7. Evaluation contract
+## 8. Evaluation contract
 
-### 7.1 Answer-scoring protocol
+### 8.1 Answer-scoring protocol
 
-Một protocol duy nhất, áp dụng cho MedQA và MedMCQA. Mọi arm dùng protocol giống hệt nhau — đó là điều kiện để các $\Delta$ ở mục 6 đọc được.
+Một protocol duy nhất, áp dụng cho native MedQA, native MedMCQA và constructed MedQuAD. Mọi arm dùng protocol giống hệt nhau — đó là điều kiện để các $\Delta$ ở mục 7 đọc được.
 
 $$
 \text{Question} + \text{A/B/C/D}
@@ -283,7 +350,7 @@ Matcher là state machine, mỗi bước chỉ chạy khi bước trước thấ
 
 Matcher, ngưỡng của nó, encoder revision và prompt template phải giống hệt nhau giữa các arm và freeze trước test.
 
-### 7.2 Primary metric
+### 8.2 Primary metric
 
 $$
 Acc_{\mathrm{pipeline}}
@@ -293,7 +360,7 @@ $$
 
 Denominator là **$N$ = toàn bộ item của cell**, không phải tập con parse thành công. Parse failure và unresolved tính là **sai**. Đây là điểm bắt buộc: accuracy tính trên tập con parse-thành-công bị thổi phồng khi model né câu khó bằng output sai format.
 
-Tên gọi chính thức của metric này là **pipeline answer-selection accuracy**. Toàn bộ $Acc(\cdot)$ trong sáu contrast ở mục 6 là $Acc_{\mathrm{pipeline}}$.
+Tên gọi chính thức của metric này là **pipeline answer-selection accuracy**. Toàn bộ $Acc(\cdot)$ trong sáu contrast ở mục 7 là $Acc_{\mathrm{pipeline}}$.
 
 Ngoài ra báo cáo tách theo client:
 
@@ -301,18 +368,18 @@ Ngoài ra báo cáo tách theo client:
 - Worst-client accuracy.
 - Per-subject accuracy.
 
-### 7.3 Secondary metrics
+### 8.3 Secondary metrics
 
 **Evaluator diagnostics:**
 
-- Conditional-likelihood accuracy trên bốn option (denominator = $N$).
+- Conditional-likelihood accuracy trên bốn option (denominator = $N$). Với mỗi option $x\in\{A,B,C,D\}$, chấm conditional log-likelihood của đúng completion cố định `Final answer: x`; chọn option có score lớn nhất. Pin tokenizer và xác nhận bốn completion có tokenization tương đương; nếu không tương đương, dùng mean log-probability trên token và ghi rõ normalization.
 - Exact-match coverage (tỷ lệ dừng ở bước 1–2).
 - Semantic-fallback rate (tỷ lệ phải dùng bước 3).
 - Unresolved rate.
 - Agreement matrix giữa pipeline accuracy và conditional-likelihood accuracy.
-- **Position-bias macro-F1**: macro-F1 trên bốn nhãn vị trí A/B/C/D, kèm phân phối vị trí gold của từng dataset. Micro-F1 trùng với accuracy; khoảng cách giữa macro-F1 và accuracy phản ánh thiên lệch của model về một vị trí nhất định, sau khi đã trừ đi phần do dataset vốn lệch. Đây là diagnostic, không phải headline metric.
+- **Position-bias macro-F1**: macro-F1 trên bốn nhãn vị trí A/B/C/D, kèm phân phối vị trí gold và predicted của từng dataset. Micro-F1 trùng với accuracy; khoảng cách giữa macro-F1 và accuracy là tín hiệu cần đọc cùng hai phân phối vị trí, không tự động “trừ” được bias sẵn có của dataset. Đây là diagnostic, không phải headline metric.
 
-**Chất lượng dự đoán:** Calibration/ECE.
+**Chất lượng dự đoán:** Calibration/ECE chỉ tính từ phân phối xác suất chuẩn hóa của conditional-likelihood evaluator; final text của pipeline tự nó không cung cấp confidence hợp lệ để tính ECE.
 
 **Retrieval health và chất lượng:**
 
@@ -327,65 +394,69 @@ Ngoài ra báo cáo tách theo client:
 - Inference latency, throughput và peak VRAM.
 - Train/eval wall-clock và số optimizer step, để đối chiếu matched-compute giữa C0 và F0.
 
-**Privacy** (chỉ khi cơ chế tương ứng ở mục 8 đã triển khai): canary retrieve rate, canary leak rate trong generated output, `(epsilon, delta)`.
+**Privacy** (chỉ khi cơ chế tương ứng ở mục 9 đã triển khai): canary retrieve rate, canary leak rate trong generated output, `(epsilon, delta)`.
 
-BLEU/ROUGE-L/BERTScore **không** dùng cho answer-selection; xem mục 7.7.
+BLEU/ROUGE-L/BERTScore **không** dùng cho answer-selection; xem mục 8.7.
 
-### 7.4 Báo cáo theo dataset, không gộp micro-accuracy
+### 8.4 Báo cáo theo dataset, không gộp micro-accuracy
 
 Kết quả phải báo riêng từng dataset:
 
 - Native MedQA accuracy.
 - Native MedMCQA accuracy.
+- **Constructed MedQuAD 4-way answer-selection accuracy** — luôn gọi đủ tên vì kết quả phụ thuộc cả kiến thức của model lẫn benchmark construction và distractor quality.
 
-Không gộp sample của hai dataset thành một micro-accuracy: MedQA và MedMCQA khác nhau về nguồn, độ khó và kích thước, nên micro-average sẽ để MedMCQA lấn át. Khi cần một con số tổng hợp, chỉ **macro-average các effect** $\Delta$ ở mục 6 qua dataset, không macro-average accuracy tuyệt đối.
+Không gộp sample của ba dataset thành một micro-accuracy: nguồn, kích thước, độ khó và cách xây dựng khác nhau; đặc biệt native MCQ và constructed MCQ không có cùng độ khó tuyệt đối. Khi cần một con số tổng hợp, chỉ **macro-average các effect** $\Delta$ ở mục 7 qua dataset, không macro-average accuracy tuyệt đối.
 
-### 7.5 Statistics
+### 8.5 Statistics
 
 - Dùng paired seed IDs giữa các training arm cần so sánh.
 - Dùng paired item bootstrap cho deterministic inference contrast.
 - Dùng hierarchical paired bootstrap qua seed và evaluation unit cho trained arms.
 - Báo cáo effect size và 95% confidence interval, không chỉ p-value.
 - McNemar có thể dùng bổ sung cho hai prediction vector trên cùng test set.
-- Freeze primary contrasts và multiple-comparison correction trước test. Correction family là đúng sáu primary contrast ở mục 6; $\Delta_{Central}$ và mọi secondary metric nằm ngoài family và được báo cáo descriptive.
+- Freeze primary contrasts và multiple-comparison correction trước test. Correction family là đúng sáu primary contrast ở mục 7; $\Delta_{Central}$ và mọi secondary metric nằm ngoài family và được báo cáo descriptive.
+- Với constructed MedQuAD, chạy thêm distractor-manifest sensitivity analysis đã định trước ở mục 5.4; phân tích này là robustness diagnostic, không được chọn manifest cho kết quả đẹp nhất.
 - Nếu pipeline accuracy và conditional-likelihood accuracy **đảo dấu effect hoặc đảo thứ hạng arm** trong cùng một cell, kết luận của cell đó phải mang nhãn **"evaluator-dependent"**; không im lặng chọn một evaluator làm ground truth.
 - Toàn bộ kết quả được framing **exploratory**, không dùng từ "confirmatory" và không đặt pass/fail gate trên effect size.
 
-### 7.6 Quy tắc phát ngôn
+### 8.6 Quy tắc phát ngôn
 
 Được phép claim:
 
-> We evaluate a unified free-text generation and answer-matching pipeline on native four-way medical MCQ benchmarks. This benchmark evaluates answer selection rather than open-ended question answering.
+> We evaluate a unified free-text generation and answer-matching pipeline on native and constructed four-way medical MCQ benchmarks. The constructed MedQuAD benchmark evaluates answer selection on converted MCQs rather than native open-ended question answering.
 
 **Không** được claim:
 
 > The system is validated on both MCQ and open-ended QA.
 
-Model có sinh free-text, nhưng nó sinh **trong khi nhìn thấy bốn option**, nên output là hành vi chọn đáp án chứ không phải trả lời tự luận. Muốn claim thứ hai, cần một evaluation riêng trên câu hỏi không hiển thị A/B/C/D, chấm bằng metric riêng: token-F1, semantic answer similarity, medical-concept agreement, human factuality audit. Track này là **secondary analysis**, không nằm trong sáu contrast chính ở mục 6.
+Model có sinh free-text, nhưng nó sinh **trong khi nhìn thấy bốn option**, nên output là hành vi chọn đáp án chứ không phải trả lời tự luận. Muốn claim thứ hai, cần một evaluation riêng trên câu hỏi không hiển thị A/B/C/D, chấm bằng metric riêng: token-F1, semantic answer similarity, medical-concept agreement, human factuality audit. Track này là **secondary analysis**, không nằm trong sáu contrast chính ở mục 7.
 
-### 7.7 Ánh xạ từ metric list gốc của proposal
+### 8.7 Ánh xạ từ metric list gốc của proposal
 
 Danh sách metric trong proposal ban đầu được xử lý như sau. Không metric nào bị bỏ im lặng.
 
 | Metric gốc | Quyết định | Nằm ở đâu |
 |---|---|---|
-| **Accuracy** | ✅ **Primary** | $Acc_{\mathrm{pipeline}}$, mục 7.2, denominator $=N$ |
-| **F1-score** | ⚠️ Hạ xuống **diagnostic** | Position-bias macro-F1, mục 7.3 |
+| **Accuracy** | ✅ **Primary** | $Acc_{\mathrm{pipeline}}$, mục 8.2, denominator $=N$ |
+| **F1-score** | ⚠️ Hạ xuống **diagnostic** | Position-bias macro-F1, mục 8.3 |
 | **BLEU** | ❌ **Loại** | — |
 | **ROUGE-L** | ❌ **Loại** | — |
-| **BERTScore** | ❌ **Loại khỏi protocol chính** | Chỉ dùng được ở track free-form tùy chọn, mục 7.6 |
+| **BERTScore** | ❌ **Loại khỏi protocol chính** | Chỉ dùng được ở track free-form tùy chọn, mục 8.6 |
 | **Communication Cost** | ✅ **Secondary** | Mục 8.3, tách uplink/downlink/tổng |
 | **Convergence Rate** | ✅ **Secondary** | Mục 8.3, đường cong theo round + $R_{90}$ |
 
 Lý do loại ba metric sinh văn bản:
 
-- Sau mục 2, **toàn bộ evaluation là four-way answer selection**. Output cần chấm là một nhãn trong `{A,B,C,D}`, không phải một đoạn văn. BLEU và ROUGE-L đo n-gram overlap giữa hai chuỗi; với output `Metformin` so với reference `Metformin` chúng luôn bằng 1 hoặc 0 và mang đúng thông tin mà accuracy đã mang, chỉ nhiễu hơn.
+- Sau mục 2, **toàn bộ evaluation chính là four-way answer selection**. Output cần chấm là một nhãn trong `{A,B,C,D}`, không phải một đoạn văn. BLEU và ROUGE-L đo n-gram overlap giữa hai chuỗi; với output `Metformin` so với reference `Metformin` chúng luôn bằng 1 hoặc 0 và mang đúng thông tin mà accuracy đã mang, chỉ nhiễu hơn.
 - BERTScore trên chuỗi một-vài-token không ổn định và có thể cho điểm cao cho một option **sai nhưng gần nghĩa** — tức thưởng cho câu trả lời sai chỉ vì nó nằm cùng vùng ngữ nghĩa với đáp án đúng.
-- Ba metric này chỉ có nghĩa nếu có output tự luận thật để chấm. Điều kiện đó chỉ tồn tại ở track free-form tùy chọn ở mục 7.6, và ngay tại đó cũng nên ưu tiên token-F1, semantic answer similarity và medical-concept agreement hơn BLEU/ROUGE-L.
+- Ba metric này chỉ có nghĩa nếu có output tự luận thật để chấm. Điều kiện đó chỉ tồn tại ở track free-form tùy chọn ở mục 8.6, và ngay tại đó cũng nên ưu tiên token-F1, semantic answer similarity và medical-concept agreement hơn BLEU/ROUGE-L.
 
-Nếu reviewer hoặc hội đồng yêu cầu giữ BLEU/ROUGE-L, cách đúng là **mở track free-form ở mục 7.6**, không phải áp chúng lên MCQ.
+Nếu reviewer hoặc hội đồng yêu cầu giữ BLEU/ROUGE-L, cách đúng là **mở track free-form ở mục 8.6**, không phải áp chúng lên MCQ.
 
-## 8. Security và privacy trong plan
+## 9. Security và privacy trong plan
+
+**Trạng thái hiện tại: planned, chưa mặc định là implemented hoặc validated.** Các mục dưới đây được giữ vì là hướng dự kiến triển khai, nhưng không được trình bày như đóng góp đã kiểm chứng khi chưa có code và kết quả.
 
 Giữ các thành phần sau trong plan nếu chúng thuộc phạm vi triển khai:
 
@@ -397,7 +468,7 @@ Giữ các thành phần sau trong plan nếu chúng thuộc phạm vi triển k
 
 Trong implementation plan phải phân biệt rõ trạng thái `planned`, `implemented` và `experimentally validated`. Final paper chỉ dùng claim **privacy-preserving** sau khi cơ chế tương ứng đã được triển khai và đánh giá; trước thời điểm đó mô tả hệ thống là **data-local by design** hoặc **privacy-oriented**.
 
-## 9. Paper outline đã cập nhật
+## 10. Paper outline đã cập nhật
 
 1. Introduction
 2. Related Work
@@ -412,10 +483,11 @@ Trong implementation plan phải phân biệt rõ trạng thái `planned`, `impl
    - In-Context Prompt Construction
    - Local and Federated LoRA Training
    - Client-Aware Demonstration Re-ranking
-   - Secure Aggregation and Differential Privacy
+   - Planned Secure Aggregation and Differential Privacy Extension *(chỉ chuyển thành phương pháp chính nếu đã implemented)*
    - Training Objective
 4. Experiments
    - Datasets and Client Partitioning
+   - Constructed MedQuAD Benchmark and Distractor Audit
    - Baseline Arms
    - Leakage-Controlled Manifest Construction
    - Metrics and Statistical Protocol
@@ -424,18 +496,18 @@ Trong implementation plan phải phân biệt rõ trạng thái `planned`, `impl
    - Federated ICL Effect
    - Retrieval and Client-Aware Re-ranking Effects
    - Non-IID, Efficiency and Communication Analysis
-   - Privacy Analysis
+   - Privacy Analysis *(chỉ xuất hiện trong Results nếu đã experimentally validated)*
 6. Discussion and Limitations
 7. Conclusion
 
 Không có mục Multimodal Representation Learning hoặc multimodal extension trong outline hiện tại.
 
-## 10. Pre-run acceptance checklist
+## 11. Pre-run acceptance checklist
 
 - [ ] Mọi exemplar đều có original split là `train`.
 - [ ] Không có validation/test ID trong support repository.
 - [ ] Không có overlap theo normalized text, hash, near-duplicate cluster hoặc provenance group.
-- [ ] Mọi query trong sealed cohort có đúng năm exemplar hợp lệ.
+- [ ] Mọi query trong sealed evaluation subset có đúng năm exemplar hợp lệ.
 - [ ] Retriever không encode gold label của query.
 - [ ] Tất cả retrieval arm dùng đúng một encoder/index/revision.
 - [ ] B0/B1, L0/L1 và F0/F1/F2 dùng cùng checkpoint trong từng nhóm.
@@ -449,21 +521,27 @@ Không có mục Multimodal Representation Learning hoặc multimodal extension 
 - [ ] Multimodal đã được loại khỏi scope và outline.
 - [ ] Matcher, ngưỡng fallback và evaluator protocol đã freeze trước test.
 - [ ] Data seed đã freeze và dùng chung cho mọi arm; không arm nào chạy trên partition/manifest khác.
-- [ ] Training seed theo mục 5.2 đã khai báo; paired seed ID map được giữa L0, F0 và C0.
+- [ ] Training seed theo mục 6.2 đã khai báo; paired seed ID map được giữa L0, F0 và C0.
 - [ ] Decoding deterministic (greedy, temperature 0) và encoder revision đã pin cho mọi arm.
 - [ ] Denominator của mọi accuracy là N, parse-failure và unresolved tính là sai.
+- [ ] MedQuAD split đã được freeze theo source/provenance trước client partition và benchmark construction.
+- [ ] Constructed MedQuAD chỉ gồm item qua eligibility filter; toàn bộ evaluation subset đã được human-audit.
+- [ ] Distractor chỉ lấy từ training answer pool, gold position đã cân bằng và candidate manifest đã freeze trước prediction.
+- [ ] Không có synonym, alias, entailed answer hoặc item multi-correct trong sealed constructed manifest.
 
-## 11. Post-run reporting checklist
+## 12. Post-run reporting checklist
 
 Chạy **sau** khi eval test xong. Đây là kiểm tra tính đầy đủ và trung thực của báo cáo, không phải gate chặn.
 
-- [ ] Sáu primary contrast ở mục 6 đều có effect size kèm 95% CI, báo riêng theo dataset.
+- [ ] Sáu primary contrast ở mục 7 đều có effect size kèm 95% CI, báo riêng theo dataset.
 - [ ] Mọi bảng ghi rõ số training seed đã dùng.
 - [ ] $\Delta_{Central}$ báo kèm matched-compute accounting và không mang ngôn ngữ upper bound hay pass/fail.
 - [ ] Parse coverage, semantic-fallback rate và unresolved rate đã báo cáo cho mọi cell.
 - [ ] Agreement giữa pipeline accuracy và conditional-likelihood accuracy đã báo cáo; cell nào đảo dấu hoặc đảo thứ hạng đã dán nhãn "evaluator-dependent".
 - [ ] Không có micro-accuracy gộp qua dataset trong bất kỳ bảng nào.
-- [ ] Claim về open-ended QA không xuất hiện, trừ khi track free-form ở mục 7.6 đã thực sự chạy.
+- [ ] Constructed MedQuAD luôn được gọi đủ là “constructed MedQuAD 4-way answer-selection”; không trình bày như native open-ended QA.
+- [ ] Distractor sensitivity analysis đã được báo cáo; nếu thứ hạng arm đổi, kết luận mang nhãn distractor-dependent.
+- [ ] Claim về open-ended QA không xuất hiện, trừ khi track free-form ở mục 8.6 đã thực sự chạy.
 - [ ] Claim privacy vẫn ở mức "data-local by design" nếu cơ chế tương ứng chưa được đánh giá.
-- [ ] Config/manifest/model hash trong log khớp bản đã freeze ở mục 10.
+- [ ] Config/manifest/model hash trong log khớp bản đã freeze trước test theo mục 11.
 - [ ] Toàn bộ kết luận mang framing exploratory.

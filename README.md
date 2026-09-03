@@ -117,9 +117,89 @@ and the installed wheel are independent layers.
 
 ## Full run, start to finish
 
-To run every arm, work through this sequence once. `scripts/train_all.sh` performs the
-training half on Linux; the PowerShell below is the Windows equivalent and adds the
-evaluation and reporting steps.
+One command runs every step, from downloading the dataset to writing the contrast
+report:
+
+```powershell
+fedicl-mqa pipeline --config configs\a5000.yaml --gpu 1
+```
+
+It is resumable. Each step checks whether its output already exists, so re-running after
+an interruption continues where it stopped rather than repeating hours of GPU work.
+Training steps always run but resume from their own checkpoints and return quickly when
+there is nothing left to do. `--force` re-runs everything.
+
+The ten steps, in the order their outputs become available:
+
+| # | Step | Considered done when |
+| --- | --- | --- |
+| 1 | prepare-data | `data/<dataset>/partition_manifest.json` exists |
+| 2 | audit-retrieval | `data/<dataset>/retrieval_audit.json` exists |
+| 3 | train-local | resumes from its checkpoints |
+| 4 | train-federated | resumes from its checkpoints |
+| 5 | evaluate-f0-validation | every seed x round summary exists |
+| 6 | select-round | `training/<dataset>/federated/selected_round.json` exists |
+| 7 | train-centralized | resumes from its checkpoints |
+| 8 | build-priors | every seed's prior exists |
+| 9 | evaluate-all | every arm has a test summary |
+| 10 | report | `reports/<dataset>/contrasts.json` exists |
+
+Step 8 depends on step 5, not on step 9: the leave-one-client-out prior is built only
+from F0 validation predictions, never from test data.
+
+### Watching a run
+
+`pipeline_state.yaml` is rewritten whenever a step changes status, including before a
+step starts, so a long run is watchable while it happens:
+
+```powershell
+Get-Content outputs\a5000\pipeline_state.yaml -Wait
+```
+
+Each entry carries the status, timestamps, duration and, for a failed step, the error:
+
+```yaml
+- index: 3
+  name: train-local
+  status: failed
+  duration_seconds: 412.7
+  error: 'RuntimeError: CUDA out of memory'
+- index: 4
+  name: train-federated
+  status: pending
+```
+
+Training also logs progress per batch and per epoch, so the console shows position and
+loss rather than going silent for hours:
+
+```
+01:20:31 local-client-0: epoch 1/1 batch 10/89 step 10 loss 1.3820
+01:22:40 local-client-0: epoch 1/1 complete in 146.2s, step 44
+01:22:43 local-client-0: saved checkpoint-epoch-0001-step-00000044
+```
+
+Pass `--quiet` for warnings only.
+
+### Results
+
+`arms_comparison.md` is rewritten each time an arm finishes, so the table is usable
+while a sweep is still running. Rows are ordered by accuracy:
+
+```
+| arm | runs | pipeline_accuracy | position_macro_f1 | ...
+| F2  | 3    | 0.5644 ± 0.0057   | 0.5544 ± 0.0057   | ...
+| F0  | 3    | 0.5119 ± 0.0108   | 0.5019 ± 0.0108   | ...
+| B1  | 1    | 0.3392            | 0.3292            | ...
+```
+
+`arms_comparison.json` holds the same figures plus every individual seed.
+`arms/<dataset>/<ARM>/run_log.json` traces each run of one arm with its status,
+duration and accuracy, including runs that were skipped or that failed.
+
+### Running the steps individually
+
+`scripts/train_all.sh` performs the training half on Linux; the PowerShell below is the
+Windows equivalent and is what `pipeline` issues internally.
 
 ```powershell
 $cfg = "outputs\a5000\sealed_config.json"

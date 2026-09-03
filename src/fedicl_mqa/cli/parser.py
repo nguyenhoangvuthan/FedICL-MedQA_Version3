@@ -12,6 +12,7 @@ from fedicl_mqa.cli.commands.evaluation import (
     command_evaluate_arm,
     command_report,
 )
+from fedicl_mqa.cli.pipeline import command_pipeline
 from fedicl_mqa.cli.commands.training import (
     command_build_priors,
     command_select_round,
@@ -117,6 +118,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="re-run evaluations already on disk"
     )
     sweep_all.set_defaults(func=command_evaluate_all)
+
+    whole = subparsers.add_parser(
+        "pipeline",
+        parents=[gpu],
+        help="run every step from data preparation to the contrast report, resumably",
+    )
+    whole.add_argument("--config", required=True)
+    whole.add_argument("--split", choices=["validation", "test"], default="test")
+    whole.add_argument(
+        "--force", action="store_true", help="re-run every step, ignoring finished work"
+    )
+    whole.set_defaults(func=command_pipeline)
 
     doctor = subparsers.add_parser(
         "doctor", parents=[gpu], help="check the local GPU and ML dependencies"

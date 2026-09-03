@@ -9,25 +9,25 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from .audit import audit_retrieval_cohort
-from .auth import apply_hf_token, find_token_file
-from .checkpointing import CheckpointManager
-from .config import Config
-from .data import (
+from fedicl_mqa.evaluation.audit import audit_retrieval_cohort
+from fedicl_mqa.core.auth import apply_hf_token, find_token_file
+from fedicl_mqa.training.checkpointing import CheckpointManager
+from fedicl_mqa.core.config import Config
+from fedicl_mqa.data.preparation import (
     build_partition,
     load_native_dataset,
     load_partition,
     materialize_partition,
     resolve_hub_revision,
 )
-from .evaluation import ARMS, evaluate_arm
-from .federated import adapter_state, set_adapter_state
-from .io import read_json, write_json
-from .leakage import assert_no_support_leakage
-from .modeling import load_lora_bundle, resolve_model_revision
-from .priors import leave_one_client_out_weakness, load_prediction_rows, read_priors, write_priors
-from .reporting import build_contrast_report, read_predictions, write_contrast_report
-from .workflows import train_centralized, train_federated, train_local_clients
+from fedicl_mqa.evaluation.arms import ARMS, evaluate_arm
+from fedicl_mqa.training.federated import adapter_state, set_adapter_state
+from fedicl_mqa.core.io import read_json, write_json
+from fedicl_mqa.data.leakage import assert_no_support_leakage
+from fedicl_mqa.modeling.loader import load_lora_bundle, resolve_model_revision
+from fedicl_mqa.evaluation.priors import leave_one_client_out_weakness, load_prediction_rows, read_priors, write_priors
+from fedicl_mqa.evaluation.reporting import build_contrast_report, read_predictions, write_contrast_report
+from fedicl_mqa.training.workflows import train_centralized, train_federated, train_local_clients
 
 _SHA = re.compile(r"^[0-9a-f]{40,64}$", re.IGNORECASE)
 

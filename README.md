@@ -69,18 +69,18 @@ uv sync --extra dev
 The shell scripts under `scripts/` are bash-only. Every step they perform is also
 available as a CLI subcommand, which runs unchanged on Windows.
 
-`uv sync` installs the default PyPI wheel for torch, which on Windows carries no CUDA
-support. Reinstall it from the PyTorch index afterwards, matching the CUDA version that
-`nvidia-smi` reports:
+The default PyPI wheel for torch bundles CUDA on Linux but not on Windows, so
+`pyproject.toml` routes torch to the PyTorch index under `sys_platform == 'win32'`.
+`uv sync` therefore installs a CUDA build on both platforms and no extra step is needed.
+Confirm it after syncing:
 
 ```powershell
-uv pip install torch --force-reinstall --index-url https://download.pytorch.org/whl/cu128
 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
-A version string ending in `+cpu` means the CPU-only wheel is still installed. Repeat
-this after any later `uv sync`, which resolves torch from PyPI again. On Linux the
-default PyPI wheel already bundles CUDA and no extra step is needed.
+A version ending in `+cu128` is correct; one ending in `+cpu` means the CPU-only wheel
+is installed and CUDA will be unavailable no matter what `nvidia-smi` reports. To move to
+a different CUDA version, change the `url` under `[[tool.uv.index]]` to match the driver.
 
 ## Hugging Face authentication
 

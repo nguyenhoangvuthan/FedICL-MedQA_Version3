@@ -34,6 +34,22 @@ fedicl-mqa = "fedicl_mqa.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# The default PyPI wheel for torch bundles CUDA on Linux but not on Windows, so a plain
+# `uv sync` on Windows silently installs a CPU-only build and every CUDA command fails
+# with the GPU sitting idle. Pull torch from the PyTorch index there instead.
+#
+# explicit = true keeps this index out of the resolution for every other package: only
+# names listed under [tool.uv.sources] may come from it. Without that flag the index
+# would shadow PyPI for the whole dependency set and pin unrelated packages to whatever
+# subset PyTorch happens to mirror.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

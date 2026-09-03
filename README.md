@@ -103,31 +103,63 @@ device via `CUDA_VISIBLE_DEVICES`, leaving `hardware.device` in the config untou
 the sealed configuration hash still matches. Editing `hardware.device` in the YAML to
 pick a GPU would change the hash and invalidate prepared data and existing checkpoints.
 
-## Evaluating arms
+Confirm the GPU and the torch build before a full run:
 
-`evaluate-arm` runs one arm across every configured training seed on the test split:
-
-```bash
-fedicl-mqa evaluate-arm --config outputs/a5000/sealed_config.json --arm B1 --gpu 1
-```
-
-Seeds come from `experiment.training_seeds`. B0 and B1 do not consume a trained
-checkpoint, so they run once and are recorded under `deterministic/` rather than per
-seed. `evaluate-all` sweeps all eight arms the same way:
-
-```bash
-fedicl-mqa evaluate-all --config outputs/a5000/sealed_config.json --gpu 1
-```
-
-Both commands skip any evaluation whose `summary.json` already exists, so an interrupted
-sweep resumes where it stopped. Pass `--force` to re-run everything.
-
-Confirm the GPU before a full run:
-
-```bash
+```powershell
 nvidia-smi
-fedicl-mqa doctor --config configs/a5000.yaml
+fedicl-mqa doctor --config configs\a5000.yaml --gpu 1
 ```
+
+`doctor` prints a `torch_build` block with the torch version, the CUDA version it was
+built against, the visible device count and `CUDA_VISIBLE_DEVICES`. A version ending in
+`+cpu` means CUDA is unavailable no matter what `nvidia-smi` reports, because the driver
+and the installed wheel are independent layers.
+
+## Full run, start to finish
+
+To run every arm, work through this sequence once. `scripts/train_all.sh` performs the
+training half on Linux; the PowerShell below is the Windows equivalent and adds the
+evaluation and reporting steps.
+
+```powershell
+$cfg = "outputs\a5000\sealed_config.json"
+$gpu = 1
+
+# 1. Freeze the data and audit the retrieval cohort.
+fedicl-mqa prepare-data --config configs\a5000.yaml --gpu $gpu
+fedicl-mqa audit-retrieval --config $cfg --gpu $gpu
+
+# 2. Local and Federated LoRA, scoring F0 on validation at each candidate round.
+foreach ($seed in 42, 43, 44) {
+  fedicl-mqa train --config $cfg --mode local --seed $seed --resume auto --gpu $gpu
+  fedicl-mqa train --config $cfg --mode federated --seed $seed --resume auto --gpu $gpu
+  foreach ($round in 4, 6, 8) {
+    fedicl-mqa evaluate --config $cfg --arm F0 --seed $seed `
+      --split validation --round $round --gpu $gpu
+  }
+}
+
+# 3. Select one global FL round from validation accuracy alone.
+fedicl-mqa select-round --config $cfg --gpu $gpu
+
+# 4. Centralized LoRA, then the F2 leave-one-client-out prior per seed.
+fedicl-mqa train --config $cfg --mode centralized --all-seeds --resume auto --gpu $gpu
+foreach ($seed in 42, 43, 44) {
+  fedicl-mqa build-priors --config $cfg --seed $seed --gpu $gpu
+}
+
+# 5. Evaluate every arm on the test split, then build the contrast report.
+fedicl-mqa evaluate-all --config $cfg --gpu $gpu
+fedicl-mqa report --config $cfg --gpu $gpu
+```
+
+Step 1 reads `configs\a5000.yaml`; every later step reads
+`outputs\a5000\sealed_config.json`. `prepare-data` resolves mutable Hub refs to commit
+SHAs and writes that sealed file, and the remaining commands must read it so the config
+hash matches.
+
+Every training command accepts `--resume auto`, and the evaluation sweeps skip work
+already on disk, so the whole sequence is safe to re-run after an interruption.
 
 ## Reproducible data preparation
 
@@ -155,6 +187,17 @@ fedicl-mqa evaluate \
   --split test
 ```
 
+The same smoke run on Windows:
+
+```powershell
+$smoke = "outputs\a5000-smoke\sealed_config.json"
+fedicl-mqa prepare-data --config configs\a5000-smoke.yaml --gpu 1
+fedicl-mqa audit-retrieval --config $smoke --gpu 1
+fedicl-mqa train --config $smoke --mode local --seed 42 --resume auto --gpu 1
+fedicl-mqa train --config $smoke --mode federated --seed 42 --resume auto --gpu 1
+fedicl-mqa evaluate-arm --config $smoke --arm F1 --gpu 1
+```
+
 The smoke configuration uses one seed and subsampled splits. It is for code validation only and is
 not valid paper evidence.
 
@@ -173,6 +216,9 @@ Train all paired seeds and select one global FL round:
 ```bash
 bash scripts/train_all.sh outputs/a5000/sealed_config.json 42 43 44
 ```
+
+This script requires bash. On Windows Server, use steps 2 to 4 of "Full run, start to
+finish" above, which issue the same commands in the same order.
 
 The script performs:
 
@@ -205,36 +251,80 @@ A checkpoint is rejected if any artifact or configuration differs.
 
 ## Evaluation arms
 
-B0 and B1 are deterministic and run once:
+### Every arm at once
 
-```bash
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm B0 --split test
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm B1 --split test
+`evaluate-all` sweeps all eight arms across every configured training seed on the test
+split. This is the command to run once training has finished:
+
+```powershell
+fedicl-mqa evaluate-all --config outputs\a5000\sealed_config.json --gpu 1
 ```
 
-Evaluate trained arms for every seed:
+It is not a shortcut past training. Only B0 and B1 evaluate without a checkpoint; the
+command stops at the first arm whose checkpoint or prior is missing, keeping whatever it
+already finished. See "Prerequisites" below.
 
-```bash
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm L0 --seed 42 --split test
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm L1 --seed 42 --split test
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm F0 --seed 42 --split test
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm F1 --seed 42 --split test
-fedicl-mqa evaluate --config outputs/a5000/sealed_config.json --arm C0 --seed 42 --split test
+`evaluate-arm` does the same for one arm:
+
+```powershell
+fedicl-mqa evaluate-arm --config outputs\a5000\sealed_config.json --arm B1 --gpu 1
 ```
 
-Build the leave-one-client-out weakness prior only from F0 validation predictions, then evaluate F2:
+Both default to `--split test`. Seeds come from `experiment.training_seeds`, and the
+arm's checkpoint family decides how many runs happen:
 
-```bash
-fedicl-mqa build-priors --config outputs/a5000/sealed_config.json --seed 42
-fedicl-mqa evaluate \
-  --config outputs/a5000/sealed_config.json \
-  --arm F2 \
-  --seed 42 \
-  --split test
+| Arms | Checkpoint family | Runs per arm | Output subdirectory |
+| --- | --- | --- | --- |
+| B0, B1 | none | 1 | `deterministic/` |
+| L0, L1 | local | one per seed | `seed-42/`, `seed-43/`, `seed-44/` |
+| F0, F1, F2 | federated | one per seed | `seed-<n>/` |
+| C0 | centralized | one per seed | `seed-<n>/` |
+
+B0 and B1 reset the adapter to its initial state rather than loading a trained
+checkpoint, so every seed would repeat identical work. They run once and are recorded
+under `deterministic/`, not per seed.
+
+Both commands treat an existing `summary.json` as a finished run and skip it, printing
+the accuracy already on disk. `summary.json` is written after `predictions.jsonl`, so a
+run interrupted part-way is repeated rather than skipped, and an interrupted sweep
+resumes where it stopped. `--force` re-runs everything including completed evaluations:
+
+```powershell
+fedicl-mqa evaluate-all --config outputs\a5000\sealed_config.json --gpu 1 --force
 ```
 
-The CLI reads the prior matching the globally selected round. The F2 candidate pool comes from the
-same retriever as F1; F2 changes only the ranking score.
+Arms are swept in alphabetical order: B0, B1, C0, F0, F1, F2, L0, L1.
+
+### Prerequisites
+
+| Needed first | Arms that depend on it |
+| --- | --- |
+| `prepare-data` | all |
+| `audit-retrieval` | B1, L1, F1, F2 |
+| `train --mode local` | L0, L1 |
+| `train --mode federated` | F0, F1, F2 |
+| `evaluate --arm F0 --split validation` at rounds 4, 6, 8 | `select-round`, then F0, F1, F2 |
+| `select-round` | F0, F1, F2, C0 |
+| `train --mode centralized` | C0 |
+| `build-priors --seed <n>` | F2 |
+
+`build-priors` depends on the F0 validation evaluations: the leave-one-client-out
+weakness prior is built only from validation predictions, never from test data.
+
+### Single evaluations
+
+`evaluate` remains the single-run primitive that both sweep commands call underneath.
+B0 and B1 reject `--seed`; every other arm requires it:
+
+```powershell
+fedicl-mqa evaluate --config outputs\a5000\sealed_config.json --arm B0 --split test
+fedicl-mqa evaluate --config outputs\a5000\sealed_config.json --arm L0 --seed 42 --split test
+fedicl-mqa evaluate --config outputs\a5000\sealed_config.json --arm F2 --seed 42 --split test
+```
+
+Unlike the sweep commands, `evaluate` always re-runs and overwrites. The CLI reads the
+F2 prior matching the globally selected round. The F2 candidate pool comes from the same
+retriever as F1; F2 changes only the ranking score.
 
 Finally, after every test arm exists for all three seeds:
 
@@ -253,6 +343,16 @@ Logic tests do not download models or datasets:
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
+
+In PowerShell:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest discover -s tests -v
+```
+
+These cover configuration, schema, retrieval, leakage, checkpointing, reporting, token
+resolution and the evaluation sweeps. They need no GPU and no CUDA build of torch.
 
 Full GPU validation should start with the smoke config, inspect peak VRAM in each summary/telemetry
 file, then freeze the full A5000 config before any reported test run.

@@ -126,6 +126,10 @@ $$
 
 trong đó $a^*$ là reference answer gốc và $d_1,d_2,d_3$ là distractor hợp lý nhưng sai.
 
+**Bốn candidate không bao giờ xuất hiện trong prompt.** Chúng chỉ tồn tại ở tầng scoring: model nhận câu hỏi trần, sinh câu trả lời tự do, rồi câu trả lời đó mới được chiếu lên tập bốn candidate để xác định model đã chọn đáp án nào. Xem mục 8.1.2.
+
+Hệ quả: constructed MedQuAD đo **recall** (model phải tự tạo ra đáp án), trong khi native MCQ đo **recognition** (model nhận diện trong bốn lựa chọn có sẵn). Hai chế độ này không so sánh trực tiếp được với nhau — mục 8.4 đã cấm gộp micro-accuracy, và ràng buộc đó càng bắt buộc ở đây.
+
 ### 5.2 Eligibility filter
 
 Không phải mọi MedQuAD pair đều chuyển được: nhiều answer là đoạn giải thích dài hoặc danh sách nhiều ý, không có single best answer. Chỉ giữ item thỏa predicate eligibility đã khóa trước:
@@ -139,8 +143,9 @@ Cohort test constructed dự kiến 300–500 item sau filter và audit.
 - Distractor cùng answer type với gold: bệnh–bệnh, thuốc–thuốc, xét nghiệm–xét nghiệm.
 - Ưu tiên **retrieve** distractor từ answer pool của train-support thay vì sinh tự do; distractor sinh tự do thường thiếu thuyết phục và khó kiểm soát.
 - Loại synonym, paraphrase, hoặc bất kỳ option nào cũng có thể đúng.
-- Hạn chế surface cue: độ dài, capitalization, cách diễn đạt.
-- Vị trí gold cân bằng giữa A/B/C/D.
+- Hạn chế surface cue: độ dài, capitalization, cách diễn đạt. Vì candidate không hiển thị trong prompt, cue không giúp model — nhưng chúng làm lệch **matcher**: candidate dài bất thường hoặc diễn đạt khác hẳn sẽ hút hoặc đẩy similarity một cách giả tạo.
+- Không cần cân bằng vị trí A/B/C/D vì candidate không có vị trí trong prompt. Thứ tự lưu trong manifest chỉ để định danh.
+- Khoảng cách ngữ nghĩa giữa $a^*$ và mỗi $d_j$ phải đủ lớn để matcher phân biệt được. Distractor gần nghĩa với gold không làm câu hỏi khó hơn — nó làm **phép đo sai**.
 - Candidate manifest tạo **một lần**, audit, rồi freeze trước mọi arm. Mọi arm dùng chính xác cùng manifest.
 
 ### 5.4 Human audit tính đơn nhất đáp án
@@ -310,7 +315,11 @@ Mọi contrast được tính **riêng cho từng dataset** (native MedQA, nativ
 
 ### 8.1 Answer-scoring protocol
 
-Mọi arm, mọi dataset — native MCQ và constructed MCQ — dùng **đúng một** pipeline:
+Có **hai** protocol, một cho mỗi họ dataset. Trong cùng một dataset, mọi arm dùng protocol giống hệt nhau — đó là điều kiện để các $\Delta$ ở mục 7 đọc được. Giữa hai họ dataset thì protocol khác nhau, nên kết quả không so sánh chéo được; mục 8.4 áp dụng.
+
+#### 8.1.1 Native MCQ — options hiển thị
+
+Áp dụng cho MedQA và MedMCQA.
 
 $$
 \text{Question} + \text{A/B/C/D}
@@ -331,7 +340,33 @@ Matcher là state machine, mỗi bước chỉ chạy khi bước trước thấ
 3. Semantic fallback bằng embedding match.
 4. Tie hoặc confidence dưới ngưỡng → **unresolved**, là trạng thái cuối riêng, **không** ép về một đáp án.
 
-Matcher, ngưỡng của nó và prompt template phải giống hệt nhau giữa các arm và freeze trước test.
+#### 8.1.2 Constructed MedQuAD — options ẩn
+
+Model **không** nhìn thấy bốn candidate. Nó nhận câu hỏi trần và trả lời tự do; tập candidate chỉ được dùng ở tầng chấm:
+
+$$
+\text{Question}
+\ \rightarrow\
+\text{SLM sinh free-text answer } \hat{a}
+\ \rightarrow\
+\text{nearest-candidate projection}
+\ \rightarrow\
+\text{một trong } \{a^*,d_1,d_2,d_3\}
+$$
+
+Projection chọn candidate có similarity cao nhất với $\hat{a}$:
+
+$$
+\hat{c}=\arg\max_{c\in\{a^*,d_1,d_2,d_3\}}\operatorname{sim}_{match}(\hat{a},c)
+$$
+
+Item tính đúng khi $\hat{c}=a^*$. Ba ràng buộc bắt buộc:
+
+- **Ngưỡng và tie.** Nếu candidate cao nhất và nhì cách nhau dưới ngưỡng `tau_margin` đã freeze, hoặc similarity cao nhất dưới `tau_abs`, item là **unresolved** và tính là sai — không ép về candidate gần nhất.
+- **Chống circularity.** Encoder dùng cho $\operatorname{sim}_{match}$ phải **khác** encoder của retriever ở mục 3 và khác mô hình dùng để chọn distractor ở mục 5.3. Một encoder vừa retrieve exemplar, vừa tạo distractor, vừa làm giám khảo là vòng lặp tự xác nhận.
+- **Empirical chance floor.** Báo cáo accuracy của một generation giả (chuỗi cố định vô nghĩa, và biến thể lặp lại chính câu hỏi) chiếu qua đúng matcher đó. Sàn ngẫu nhiên của projection **không** đảm bảo bằng 25% vì similarity có thiên lệch theo độ dài và tần suất từ; con số đo được mới là sàn thật để đối chiếu.
+
+Matcher, hai ngưỡng, encoder revision và prompt template phải giống hệt nhau giữa các arm và freeze trước test.
 
 ### 8.2 Primary metric
 
@@ -340,6 +375,8 @@ Acc_{\mathrm{pipeline}}
 =
 \frac{\#\{\text{generated answer được match đúng option}\}}{N}
 $$
+
+Với native MCQ, "match đúng" nghĩa là matcher ở mục 8.1.1 trả về nhãn gold. Với constructed MedQuAD, nghĩa là projection ở mục 8.1.2 rơi vào $a^*$.
 
 Denominator là **$N$ = toàn bộ item của cell**, không phải tập con parse thành công. Parse failure và unresolved tính là **sai**. Đây là điểm bắt buộc: accuracy tính trên tập con parse-thành-công bị thổi phồng khi model né câu khó bằng output sai format.
 
@@ -355,12 +392,13 @@ Ngoài ra báo cáo tách theo client:
 
 **Evaluator diagnostics:**
 
-- Conditional-likelihood accuracy trên bốn option (denominator = $N$).
+- Conditional-likelihood accuracy trên bốn option (denominator = $N$). Với constructed MedQuAD, tính $\log p(c\mid q)$ cho từng candidate với **prompt không chứa candidate nào** — đây là evaluator đối chiếu quan trọng nhất ở dataset này vì nó hoàn toàn không phụ thuộc encoder của matcher.
 - Exact-match coverage (tỷ lệ dừng ở bước 1–2).
 - Semantic-fallback rate (tỷ lệ phải dùng bước 3).
 - Unresolved rate.
 - Agreement matrix giữa pipeline accuracy và conditional-likelihood accuracy.
-- **Position-bias macro-F1**: macro-F1 trên bốn nhãn vị trí A/B/C/D. Vì gold position đã được cân bằng ở mục 5.3, micro-F1 trùng với accuracy; khoảng cách giữa macro-F1 và accuracy vì vậy đo đúng một thứ — mức thiên lệch của model về một vị trí nhất định. Đây là diagnostic, không phải headline metric.
+- **Position-bias macro-F1** — *chỉ cho native MCQ*: macro-F1 trên bốn nhãn vị trí A/B/C/D. Micro-F1 trùng với accuracy; khoảng cách giữa macro-F1 và accuracy vì vậy đo đúng một thứ — mức thiên lệch của model về một vị trí nhất định. Không áp dụng cho constructed MedQuAD vì candidate không có vị trí trong prompt.
+- **Projection diagnostics** — *chỉ cho constructed MedQuAD*: phân phối similarity margin giữa candidate hạng nhất và hạng nhì; tỷ lệ unresolved do `tau_margin` và do `tau_abs` (báo riêng); empirical chance floor ở mục 8.1.2; agreement giữa projection và human audit trên mẫu ngẫu nhiên.
 
 **Chất lượng dự đoán:** Calibration/ECE.
 
@@ -387,7 +425,7 @@ Kết quả phải báo riêng từng dataset:
 
 - Native MedQA accuracy.
 - Native MedMCQA accuracy.
-- **Constructed 4-way MedQuAD accuracy** — luôn gọi đủ tên, không gọi tắt là "MedQuAD accuracy", vì con số phụ thuộc cả kiến thức của model lẫn chất lượng distractor.
+- **Constructed 4-way MedQuAD accuracy (options unseen)** — luôn gọi đủ tên. Không gọi tắt là "MedQuAD accuracy" vì con số phụ thuộc cả kiến thức của model, chất lượng distractor, lẫn encoder của matcher. Cụm "options unseen" là bắt buộc: nó phân biệt chế độ recall ở mục 8.1.2 với chế độ recognition của native MCQ.
 
 Không gộp toàn bộ sample của các dataset thành một micro-accuracy: độ khó của native MCQ và constructed MCQ không so sánh được trực tiếp. Khi cần một con số tổng hợp, chỉ **macro-average các effect** $\Delta$ ở mục 7 qua dataset, không macro-average accuracy tuyệt đối.
 
@@ -406,13 +444,15 @@ Không gộp toàn bộ sample của các dataset thành một micro-accuracy: �
 
 Được phép claim:
 
-> We evaluate a unified free-text generation and answer-matching pipeline on native and constructed four-way medical MCQ benchmarks. This benchmark evaluates answer selection on constructed MCQs rather than native open-ended question answering.
+> We evaluate two answer-scoring protocols under a shared free-text generation interface: four-way answer selection on native medical MCQ benchmarks, and open-ended answer generation on MedQuAD scored by nearest-candidate projection onto a constructed four-way candidate set that the model never observes.
 
 **Không** được claim:
 
 > The system is validated on both MCQ and open-ended QA.
 
-Muốn claim thứ hai, cần một evaluation riêng trên câu tự luận nguyên bản, **không** hiển thị A/B/C/D, với metric riêng: token-F1, semantic answer similarity, medical-concept agreement, human factuality audit. Track này là **secondary analysis**, không nằm trong sáu contrast chính ở mục 7.
+Track constructed MedQuAD ở mục 8.1.2 **đã** sinh output tự luận thật, nên nó tiến gần hơn tới claim thứ hai so với thiết kế cũ. Nhưng nó vẫn chưa đủ: một câu trả lời sai vẫn có thể tình cờ gần $a^*$ hơn ba distractor và được tính đúng. Projection bốn chiều là **proxy hẹp** cho tính đúng của free-text, không phải phép đo trực tiếp.
+
+Muốn claim thứ hai đầy đủ, cần chấm chính output tự luận đó bằng metric riêng: token-F1, semantic answer similarity, medical-concept agreement, human factuality audit. Vì output đã có sẵn, đây là **secondary analysis rẻ** — chỉ thêm khâu chấm, không cần chạy lại model. Track này không nằm trong sáu contrast chính ở mục 7.
 
 ### 8.7 Ánh xạ từ metric list gốc của proposal
 
@@ -503,6 +543,9 @@ Không có mục Multimodal Representation Learning hoặc multimodal extension 
 - [ ] Human audit tính đơn nhất đáp án đã chạy; item ambiguous đã sửa hoặc loại.
 - [ ] Gold position cân bằng giữa A/B/C/D trên constructed cohort.
 - [ ] Matcher, ngưỡng fallback và evaluator protocol đã freeze trước test.
+- [ ] Encoder của $\operatorname{sim}_{match}$ khác encoder retriever và khác mô hình chọn distractor.
+- [ ] `tau_margin`, `tau_abs` đã chốt trên validation và freeze.
+- [ ] Empirical chance floor của projection đã đo và ghi lại trước test.
 - [ ] Data seed đã freeze và dùng chung cho mọi arm; không arm nào chạy trên partition/manifest khác.
 - [ ] Training seed theo mục 6.2 đã khai báo; paired seed ID map được giữa L0, F0 và C0.
 - [ ] Decoding deterministic (greedy, temperature 0) và encoder revision đã pin cho mọi arm.

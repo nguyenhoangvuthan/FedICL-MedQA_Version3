@@ -9,7 +9,11 @@ from typing import Any
 from fedicl_mqa.core.config import Config
 from fedicl_mqa.core.io import write_json
 from fedicl_mqa.data.leakage import assert_no_support_leakage
-from fedicl_mqa.evaluation.retrieval import ClosureConstrainedRetriever, SentenceTransformerEncoder, TextEncoder
+from fedicl_mqa.evaluation.retrieval import (
+    ClosureConstrainedRetriever,
+    SentenceTransformerEncoder,
+    TextEncoder,
+)
 from fedicl_mqa.core.schema import MCQExample
 
 

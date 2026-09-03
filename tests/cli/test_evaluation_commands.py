@@ -7,6 +7,7 @@ from typing import Any
 from unittest import mock
 
 from fedicl_mqa.cli import paths
+from fedicl_mqa.core.io import read_json
 from fedicl_mqa.cli.commands import evaluation
 from fedicl_mqa.core.config import Config
 from fedicl_mqa.core.io import write_json
@@ -119,6 +120,63 @@ class SweepTests(unittest.TestCase):
             evaluation._sweep_arm(self.config, "F0", split="test", round_index=6, force=False)
         self.assertEqual(seen[:3], [None, None, None])
         self.assertEqual(seen[3:], [6, 6, 6])
+
+
+class SweepSideEffectTests(unittest.TestCase):
+    """A sweep must leave a trace log and refresh the shared table as it goes."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.config = _config(self.root)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _fake_run(self, accuracy: float = 0.5) -> Any:
+        def run(config: Config, arm: str, **kwargs: Any) -> dict[str, Any]:
+            write_json(
+                paths.summary_path(
+                    config,
+                    arm,
+                    seed=kwargs["seed"],
+                    split=kwargs["split"],
+                    round_index=kwargs["round_index"],
+                ),
+                {"pipeline_accuracy": accuracy, "position_macro_f1": accuracy},
+            )
+            return {"pipeline_accuracy": accuracy}
+
+        return run
+
+    def test_every_seed_is_traced_in_the_arm_log(self) -> None:
+        with mock.patch.object(evaluation, "_run_single_evaluation", self._fake_run()):
+            evaluation._sweep_arm(
+                self.config, "F0", split="test", round_index=None, force=False
+            )
+        records = read_json(paths.arm_log_path(self.config, "F0"))["records"]
+        self.assertEqual([r["seed"] for r in records], [42, 43, 44])
+        self.assertEqual({r["status"] for r in records}, {"completed"})
+        self.assertTrue(all(r["duration_seconds"] is not None for r in records))
+
+    def test_comparison_table_is_written_after_the_arm(self) -> None:
+        with mock.patch.object(evaluation, "_run_single_evaluation", self._fake_run(0.61)):
+            evaluation._sweep_arm(
+                self.config, "C0", split="test", round_index=None, force=False
+            )
+        table = read_json(paths.comparison_path(self.config, "json"))
+        self.assertAlmostEqual(table["arms"]["C0"]["mean"]["pipeline_accuracy"], 0.61)
+
+    def test_a_failing_run_is_traced_before_the_error_propagates(self) -> None:
+        def boom(config: Config, arm: str, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("checkpoint missing")
+
+        with mock.patch.object(evaluation, "_run_single_evaluation", boom):
+            with self.assertRaises(RuntimeError):
+                evaluation._sweep_arm(
+                    self.config, "L0", split="test", round_index=None, force=False
+                )
+        record = read_json(paths.arm_log_path(self.config, "L0"))["records"][0]
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("checkpoint missing", record["error"])
 
 
 if __name__ == "__main__":

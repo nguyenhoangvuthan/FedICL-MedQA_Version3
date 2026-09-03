@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from fedicl_mqa.evaluation.reporting import (
     read_predictions,
     write_contrast_report,
 )
+from fedicl_mqa.cli import paths, results
 from fedicl_mqa.cli.paths import (
     arms_root,
     checkpoint_root,
@@ -34,7 +36,6 @@ from fedicl_mqa.cli.paths import (
     report_path,
     seal_config,
     selected_round,
-    summary_path,
 )
 
 def _load_arm_checkpoint(
@@ -139,27 +140,58 @@ def _sweep_arm(
 
     evaluate_arm writes summary.json last, after predictions.jsonl, so its presence
     marks a run that finished rather than one that was interrupted part-way.
+
+    Every run is traced into the arm's own log, and the cross-arm table is rebuilt once
+    the arm finishes, so a long sweep stays readable while it is still going.
     """
     # --round only means anything for the federated family; ignore it elsewhere so a
     # single evaluate-all invocation can carry the flag without failing on B0/L0/C0.
     effective_round = round_index if ARMS[arm].checkpoint_family == "federated" else None
     accuracies: list[float] = []
     for seed in _effective_seeds(config, arm):
-        label = f"seed-{seed}" if seed is not None else "deterministic"
-        output = evaluation_dir(
+        label = paths.seed_label(seed)
+        finished = paths.summary_path(
             config, arm, seed=seed, split=split, round_index=effective_round
         )
-        summary_path = output / "summary.json"
-        if summary_path.exists() and not force:
-            accuracy = float(read_json(summary_path)["pipeline_accuracy"])
+        started = time.perf_counter()
+        if finished.exists() and not force:
+            accuracy = float(read_json(finished)["pipeline_accuracy"])
             print(f"{arm} {label} {split}: skip, already evaluated, accuracy {accuracy:.6f}")
+            status = "skipped"
         else:
-            summary = _run_single_evaluation(
-                config, arm, seed=seed, split=split, round_index=effective_round
-            )
+            try:
+                summary = _run_single_evaluation(
+                    config, arm, seed=seed, split=split, round_index=effective_round
+                )
+            except Exception as exc:
+                # Trace the failure before it propagates, or the log would end at the
+                # last success and say nothing about why the sweep stopped here.
+                results.record_arm_run(
+                    config,
+                    arm,
+                    seed=seed,
+                    split=split,
+                    status="failed",
+                    round_index=effective_round,
+                    duration_seconds=time.perf_counter() - started,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
             accuracy = float(summary["pipeline_accuracy"])
             print(f"{arm} {label} {split}: pipeline accuracy {accuracy:.6f}")
+            status = "completed"
+        results.record_arm_run(
+            config,
+            arm,
+            seed=seed,
+            split=split,
+            status=status,
+            accuracy=accuracy,
+            round_index=effective_round,
+            duration_seconds=time.perf_counter() - started,
+        )
         accuracies.append(accuracy)
+    results.update_comparison(config, split=split)
     return accuracies
 
 
@@ -171,6 +203,8 @@ def command_evaluate_arm(args: argparse.Namespace) -> None:
     )
     mean = sum(accuracies) / len(accuracies)
     print(f"{arm} {args.split} mean over {len(accuracies)} run(s): {mean:.6f}")
+    print()
+    print(results.render_comparison(results.update_comparison(config, split=args.split)))
 
 
 def command_evaluate_all(args: argparse.Namespace) -> None:
@@ -181,9 +215,9 @@ def command_evaluate_all(args: argparse.Namespace) -> None:
             config, arm, split=args.split, round_index=args.round, force=args.force
         )
         means[arm] = sum(accuracies) / len(accuracies)
-    print(f"\n{args.split} pipeline accuracy by arm")
-    for arm, mean in means.items():
-        print(f"  {arm}: {mean:.6f}")
+    print()
+    print(results.render_comparison(results.update_comparison(config, split=args.split)))
+    print(f"Comparison table: {paths.comparison_path(config, 'md')}")
 
 
 def command_evaluate(args: argparse.Namespace) -> None:

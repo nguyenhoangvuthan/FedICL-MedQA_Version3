@@ -146,7 +146,7 @@ Zero-shot and random few-shot prompting are retained as untrained reference poin
 
 ### 6.2 Hyperparameters and training protocol
 
-- Model: Qwen2.5-3B-Instruct
+- Model: Qwen3-0.6B (thinking disabled; text-only causal LM)
 - Parameter-efficiency: LoRA with rank $r=16$
 - Aggregation: FedAvg on adapter weights only
 - Number of simulated clients: 5

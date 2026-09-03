@@ -1,0 +1,11 @@
+# Full MedMCQA run. Values omitted here inherit the locked A5000 defaults in Config.
+experiment:
+  name: fedicl_mqa_medmcqa_a5000
+  output_dir: outputs/a5000-medmcqa
+  data_seed: 20260901
+  training_seeds: [42, 43, 44]
+  deterministic: true
+
+data:
+  dataset: medmcqa
+  medmcqa_fit_ratio: 0.80

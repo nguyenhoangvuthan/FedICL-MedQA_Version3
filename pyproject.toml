@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fedicl-mqa"
+version = "0.1.0"
+description = "Leakage-controlled federated LoRA and retrieval-ICL experiments for medical MCQ"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "accelerate>=1.2,<2",
+  "datasets>=3.2,<5",
+  "huggingface-hub>=0.27,<2",
+  "numpy>=1.26,<3",
+  "peft>=0.14,<1",
+  "PyYAML>=6.0,<7",
+  "safetensors>=0.5,<1",
+  "sentence-transformers>=3.3,<6",
+  "torch>=2.5,<3",
+  "transformers>=4.51,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<10",
+  "ruff>=0.9,<1",
+]
+
+[project.scripts]
+fedicl-mqa = "fedicl_mqa.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

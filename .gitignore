@@ -5,3 +5,15 @@ HF_Access_Token.txt
 
 # Local session memory data (Remember plugin)
 .remember/
+
+# Python and experiment artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.venv/
+artifacts/
+data/processed/
+outputs/
+wandb/

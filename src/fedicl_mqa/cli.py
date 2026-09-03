@@ -1,0 +1,497 @@
+from __future__ import annotations
+
+import argparse
+import importlib.metadata
+import re
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+from .audit import audit_retrieval_cohort
+from .checkpointing import CheckpointManager
+from .config import Config
+from .data import (
+    build_partition,
+    load_native_dataset,
+    load_partition,
+    materialize_partition,
+    resolve_hub_revision,
+)
+from .evaluation import ARMS, evaluate_arm
+from .federated import adapter_state, set_adapter_state
+from .io import read_json, write_json
+from .leakage import assert_no_support_leakage
+from .modeling import load_lora_bundle, resolve_model_revision
+from .priors import leave_one_client_out_weakness, load_prediction_rows, read_priors, write_priors
+from .reporting import build_contrast_report, read_predictions, write_contrast_report
+from .workflows import train_centralized, train_federated, train_local_clients
+
+_SHA = re.compile(r"^[0-9a-f]{40,64}$", re.IGNORECASE)
+
+
+def _seal_config(path: str | Path) -> Config:
+    config = Config.from_file(path)
+    if not _SHA.fullmatch(config.data.revision):
+        config.data.revision = resolve_hub_revision(config.dataset_id, config.data.revision)
+    if not _SHA.fullmatch(config.model.revision):
+        config.model.revision = resolve_model_revision(config.model.id, config.model.revision)
+    if not _SHA.fullmatch(config.retrieval.encoder_revision):
+        config.retrieval.encoder_revision = resolve_model_revision(
+            config.retrieval.encoder_id, config.retrieval.encoder_revision
+        )
+    config.validate()
+    output = Path(config.experiment.output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    sealed = output / "sealed_config.json"
+    if sealed.exists():
+        existing = Config.from_file(sealed)
+        if existing.hash != config.hash:
+            raise ValueError(
+                f"sealed config differs from current config: {sealed}; use a new output_dir"
+            )
+    else:
+        write_json(sealed, config.to_dict())
+    return config
+
+
+def _data_root(config: Config) -> Path:
+    return Path(config.experiment.output_dir) / "data" / config.data.dataset
+
+
+def _checkpoint_root(config: Config, family: str) -> Path:
+    return Path(config.experiment.output_dir) / "checkpoints" / config.data.dataset / family
+
+
+def command_prepare_data(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    limits = {
+        "train": config.data.max_train_samples,
+        "validation": config.data.max_validation_samples,
+        "test": config.data.max_test_samples,
+    }
+    splits = load_native_dataset(
+        config.data.dataset,
+        config.dataset_id,
+        revision=config.data.revision,
+        limits=limits,
+    )
+    assignments, weights = build_partition(
+        splits,
+        num_clients=config.data.num_clients,
+        alpha=config.data.dirichlet_alpha,
+        fit_ratio=config.fit_ratio,
+        seed=config.experiment.data_seed,
+        min_support_per_client=config.data.min_support_per_client,
+    )
+    root = _data_root(config)
+    materialize_partition(
+        root,
+        splits,
+        assignments,
+        dataset_id=config.dataset_id,
+        dataset_revision=config.data.revision,
+        data_seed=config.experiment.data_seed,
+        weights=weights,
+        config_hash=config.hash,
+    )
+    clients = load_partition(root, expected_config_hash=config.hash)
+    for values in clients.values():
+        assert_no_support_leakage(
+            values["support"],
+            [*values["validation"], *values["test"]],
+            lexical_threshold=config.retrieval.lexical_jaccard_threshold,
+        )
+    print(f"Prepared and audited {config.data.dataset} at {root}")
+
+
+def command_audit_retrieval(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    output = _data_root(config) / "retrieval_audit.json"
+    result = audit_retrieval_cohort(
+        config,
+        load_partition(_data_root(config), expected_config_hash=config.hash),
+        output,
+    )
+    print(
+        f"Audited Top-{config.retrieval.top_k} capacity for {result['query_count']} queries; "
+        f"manifest: {output}"
+    )
+
+
+def _requested_seeds(config: Config, args: argparse.Namespace) -> list[int]:
+    if getattr(args, "all_seeds", False):
+        return list(config.experiment.training_seeds)
+    if args.seed is None:
+        raise ValueError("provide --seed or --all-seeds")
+    if args.seed not in config.experiment.training_seeds:
+        raise ValueError(f"seed must be one of {config.experiment.training_seeds}")
+    return [args.seed]
+
+
+def command_train(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    if args.fl_round is not None and args.mode != "centralized":
+        raise ValueError("--fl-round is only valid for centralized training")
+    clients = load_partition(_data_root(config), expected_config_hash=config.hash)
+    client_fit = {client: values["fit"] for client, values in clients.items()}
+    for seed in _requested_seeds(config, args):
+        if args.mode == "local":
+            telemetry = train_local_clients(
+                config,
+                client_fit,
+                seed=seed,
+                output_root=_checkpoint_root(config, "local"),
+                resume=args.resume,
+            )
+        elif args.mode == "federated":
+            trainer = train_federated(
+                config,
+                client_fit,
+                seed=seed,
+                output_root=_checkpoint_root(config, "federated"),
+                resume=args.resume,
+            )
+            if trainer.final_state is None:
+                raise RuntimeError("federated trainer returned without final state")
+            telemetry = {
+                "checkpoint_root": str(trainer.checkpoints.root),
+                "total_wall_clock_seconds": trainer.final_state.elapsed_seconds,
+                "total_target_exposures": trainer.final_state.target_exposures,
+                "total_optimizer_updates": trainer.final_state.optimizer_updates,
+                "effective_batch_size": config.training.train_micro_batch_size
+                * config.training.gradient_accumulation_steps,
+                "total_uplink_bytes": sum(
+                    int(row["communication"]["uplink_bytes"]) for row in trainer.history
+                ),
+                "total_downlink_bytes": sum(
+                    int(row["communication"]["downlink_bytes"]) for row in trainer.history
+                ),
+            }
+        else:
+            fl_round = args.fl_round or _selected_round(config)
+            telemetry = train_centralized(
+                config,
+                client_fit,
+                seed=seed,
+                fl_rounds=fl_round,
+                output_root=_checkpoint_root(config, "centralized"),
+                resume=args.resume,
+            )
+        write_json(
+            _checkpoint_root(config, args.mode) / f"seed-{seed}" / "telemetry.json",
+            telemetry,
+        )
+        print(f"Completed {args.mode} training for seed {seed}")
+
+
+def _selected_round(config: Config) -> int:
+    path = _checkpoint_root(config, "federated") / "selected_round.json"
+    if not path.exists():
+        raise FileNotFoundError("no selected FL round; pass --fl-round or run select-round")
+    return int(read_json(path)["round"])
+
+
+def _load_arm_checkpoint(
+    config: Config,
+    arm: str,
+    seed: int | None,
+    round_index: int | None,
+) -> tuple[Any, Any]:
+    runtime_seed = seed if seed is not None else config.experiment.data_seed
+    bundle = load_lora_bundle(config, seed=runtime_seed)
+    initial = adapter_state(bundle.model)
+    spec = ARMS[arm]
+
+    def manager(root: Path, *, keep: int | None = None) -> CheckpointManager:
+        return CheckpointManager(
+            root,
+            config_hash=config.hash,
+            model_id=config.model.id,
+            model_revision=config.model.revision,
+            keep=keep,
+        )
+
+    if spec.checkpoint_family == "base":
+
+        def before_client(client_id: int, model: Any) -> None:
+            del client_id
+            set_adapter_state(model, initial)
+
+        return bundle, before_client
+    if seed is None:
+        raise ValueError(f"arm {arm} requires --seed")
+    if spec.checkpoint_family == "local":
+
+        def before_client(client_id: int, model: Any) -> None:
+            root = _checkpoint_root(config, "local") / f"seed-{seed}" / f"client-{client_id}"
+            manager(root, keep=config.training.checkpoint_keep).load(
+                "last", model=model, restore_rng=False
+            )
+
+        return bundle, before_client
+    if spec.checkpoint_family == "federated":
+        selected = round_index or _selected_round(config)
+        root = _checkpoint_root(config, "federated") / f"seed-{seed}" / "global"
+        manager(root).load(
+            f"checkpoint-round-{selected:04d}", model=bundle.model, restore_rng=False
+        )
+        return bundle, None
+    root = _checkpoint_root(config, "centralized") / f"seed-{seed}"
+    manager(root, keep=config.training.checkpoint_keep).load(
+        "last", model=bundle.model, restore_rng=False
+    )
+    return bundle, None
+
+
+def command_evaluate(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    arm = args.arm.upper()
+    family = ARMS[arm].checkpoint_family
+    if family == "base" and args.seed is not None:
+        raise ValueError(f"arm {arm} is deterministic and does not accept --seed")
+    if family != "base" and args.seed is None:
+        raise ValueError(f"arm {arm} requires --seed")
+    if args.seed is not None and args.seed not in config.experiment.training_seeds:
+        raise ValueError(f"seed must be one of {config.experiment.training_seeds}")
+    if args.round is not None and family != "federated":
+        raise ValueError("--round is only valid for F0/F1/F2")
+    seed = None if family == "base" else args.seed
+    bundle, before_client = _load_arm_checkpoint(config, arm, seed, args.round)
+    clients = load_partition(_data_root(config), expected_config_hash=config.hash)
+    prior_path = args.subject_weights
+    if arm == "F2" and prior_path is None:
+        selected = args.round or _selected_round(config)
+        prior_path = str(
+            Path(config.experiment.output_dir)
+            / "priors"
+            / config.data.dataset
+            / f"seed-{seed}"
+            / f"round-{selected}.json"
+        )
+    priors = read_priors(prior_path) if prior_path else None
+    round_suffix = f"round-{args.round}" if args.round is not None else "selected"
+    output = (
+        Path(config.experiment.output_dir)
+        / "evaluations"
+        / config.data.dataset
+        / arm
+        / (f"seed-{seed}" if seed is not None else "deterministic")
+        / args.split
+        / round_suffix
+    )
+    summary = evaluate_arm(
+        bundle,
+        config,
+        clients,
+        arm=arm,
+        split=args.split,
+        output_dir=output,
+        seed=seed,
+        before_client=before_client,
+        subject_weights=priors,
+    )
+    print(f"{arm} {args.split} pipeline accuracy: {summary['pipeline_accuracy']:.6f}")
+
+
+def command_select_round(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    scores: dict[int, float] = {}
+    per_seed: dict[str, dict[str, float]] = {}
+    for round_index in config.training.fl_round_candidates:
+        round_scores: list[float] = []
+        for seed in config.experiment.training_seeds:
+            summary = read_json(
+                Path(config.experiment.output_dir)
+                / "evaluations"
+                / config.data.dataset
+                / "F0"
+                / f"seed-{seed}"
+                / "validation"
+                / f"round-{round_index}"
+                / "summary.json"
+            )
+            value = float(summary["pipeline_accuracy"])
+            round_scores.append(value)
+            per_seed.setdefault(str(seed), {})[str(round_index)] = value
+        scores[round_index] = sum(round_scores) / len(round_scores)
+    selected = max(sorted(scores), key=lambda value: scores[value])
+    for seed in config.experiment.training_seeds:
+        manager = CheckpointManager(
+            _checkpoint_root(config, "federated") / f"seed-{seed}" / "global",
+            config_hash=config.hash,
+            model_id=config.model.id,
+            model_revision=config.model.revision,
+        )
+        manager.mark_best(f"checkpoint-round-{selected:04d}")
+    write_json(
+        _checkpoint_root(config, "federated") / "selected_round.json",
+        {"round": selected, "mean_validation_accuracy": scores, "per_seed": per_seed},
+    )
+    print(f"Selected global round {selected}: mean validation accuracy {scores[selected]:.6f}")
+
+
+def command_build_priors(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    if args.seed not in config.experiment.training_seeds:
+        raise ValueError(f"seed must be one of {config.experiment.training_seeds}")
+    round_index = args.round or _selected_round(config)
+    predictions = (
+        Path(config.experiment.output_dir)
+        / "evaluations"
+        / config.data.dataset
+        / "F0"
+        / f"seed-{args.seed}"
+        / "validation"
+        / f"round-{round_index}"
+        / "predictions.jsonl"
+    )
+    priors = leave_one_client_out_weakness(
+        load_prediction_rows([predictions]), num_clients=config.data.num_clients
+    )
+    output = (
+        Path(config.experiment.output_dir)
+        / "priors"
+        / config.data.dataset
+        / f"seed-{args.seed}"
+        / f"round-{round_index}.json"
+    )
+    write_priors(output, priors)
+    print(f"Wrote leave-one-client-out prior to {output}")
+
+
+def command_report(args: argparse.Namespace) -> None:
+    config = _seal_config(args.config)
+    root = Path(config.experiment.output_dir) / "evaluations" / config.data.dataset
+    arm_predictions: dict[str, dict[int | None, Any]] = {}
+    for arm in ARMS:
+        family = ARMS[arm].checkpoint_family
+        if family == "base":
+            path = root / arm / "deterministic" / "test" / "selected" / "predictions.jsonl"
+            arm_predictions[arm] = {None: read_predictions(path)}
+        else:
+            arm_predictions[arm] = {
+                seed: read_predictions(
+                    root / arm / f"seed-{seed}" / "test" / "selected" / "predictions.jsonl"
+                )
+                for seed in config.experiment.training_seeds
+            }
+    report = build_contrast_report(
+        arm_predictions,
+        samples=config.evaluation.bootstrap_samples,
+        confidence=config.evaluation.confidence_level,
+        bootstrap_seed=config.experiment.data_seed,
+    )
+    output = Path(config.experiment.output_dir) / "reports" / config.data.dataset / "contrasts.json"
+    write_contrast_report(output, report)
+    print(f"Wrote primary contrast report to {output}")
+
+
+def command_doctor(args: argparse.Namespace) -> None:
+    """Fail-fast hardware/dependency check before a costly experiment run."""
+    config = Config.from_file(args.config)
+    config.validate()
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("PyTorch is not installed in the active environment") from exc
+    if config.hardware.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but PyTorch cannot see a CUDA GPU")
+
+    packages = {}
+    for package in ("torch", "transformers", "peft", "datasets", "sentence-transformers"):
+        try:
+            packages[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            packages[package] = "missing"
+    if "missing" in packages.values():
+        missing = [name for name, version in packages.items() if version == "missing"]
+        raise RuntimeError(f"missing runtime packages: {', '.join(missing)}")
+
+    report: dict[str, Any] = {
+        "packages": packages,
+        "model": config.model.id,
+        "dtype": config.model.dtype,
+        "attention": config.model.attention,
+        "max_seq_length": config.model.max_seq_length,
+        "train_effective_batch_size": config.training.train_micro_batch_size
+        * config.training.gradient_accumulation_steps,
+    }
+    if torch.cuda.is_available():
+        properties = torch.cuda.get_device_properties(0)
+        report["gpu"] = {
+            "name": properties.name,
+            "compute_capability": f"{properties.major}.{properties.minor}",
+            "vram_gib": round(properties.total_memory / 1024**3, 2),
+            "bf16_supported": bool(torch.cuda.is_bf16_supported()),
+        }
+        if config.hardware.bf16 and not torch.cuda.is_bf16_supported():
+            raise RuntimeError("the selected GPU/PyTorch build does not support BF16")
+    import json
+
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="fedicl-mqa")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    prepare = subparsers.add_parser("prepare-data", help="download, normalize and partition data")
+    prepare.add_argument("--config", required=True)
+    prepare.set_defaults(func=command_prepare_data)
+
+    audit = subparsers.add_parser(
+        "audit-retrieval", help="verify Top-5 capacity and freeze candidate manifests"
+    )
+    audit.add_argument("--config", required=True)
+    audit.set_defaults(func=command_audit_retrieval)
+
+    training = subparsers.add_parser("train", help="train Local, Federated or Central LoRA")
+    training.add_argument("--config", required=True)
+    training.add_argument("--mode", choices=["local", "federated", "centralized"], required=True)
+    seed_group = training.add_mutually_exclusive_group(required=True)
+    seed_group.add_argument("--seed", type=int)
+    seed_group.add_argument("--all-seeds", action="store_true")
+    training.add_argument("--fl-round", type=int, choices=[4, 6, 8])
+    training.add_argument("--resume", default="auto")
+    training.set_defaults(func=command_train)
+
+    evaluate = subparsers.add_parser("evaluate", help="run one baseline arm")
+    evaluate.add_argument("--config", required=True)
+    evaluate.add_argument("--arm", choices=sorted(ARMS), required=True)
+    evaluate.add_argument("--seed", type=int)
+    evaluate.add_argument("--split", choices=["validation", "test"], default="test")
+    evaluate.add_argument("--round", type=int, choices=[4, 6, 8])
+    evaluate.add_argument("--subject-weights")
+    evaluate.set_defaults(func=command_evaluate)
+
+    select = subparsers.add_parser("select-round", help="select FL round using validation only")
+    select.add_argument("--config", required=True)
+    select.set_defaults(func=command_select_round)
+
+    priors = subparsers.add_parser("build-priors", help="build F2 leave-one-client-out prior")
+    priors.add_argument("--config", required=True)
+    priors.add_argument("--seed", type=int, required=True)
+    priors.add_argument("--round", type=int, choices=[4, 6, 8])
+    priors.set_defaults(func=command_build_priors)
+
+    report = subparsers.add_parser("report", help="bootstrap the six primary contrasts")
+    report.add_argument("--config", required=True)
+    report.set_defaults(func=command_report)
+
+    doctor = subparsers.add_parser("doctor", help="check the local GPU and ML dependencies")
+    doctor.add_argument("--config", required=True)
+    doctor.set_defaults(func=command_doctor)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        args.func(args)
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        parser.error(str(exc))
+
+
+if __name__ == "__main__":
+    main()

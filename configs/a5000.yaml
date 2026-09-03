@@ -1,0 +1,79 @@
+experiment:
+  name: fedicl_mqa_a5000
+  output_dir: outputs/a5000
+  data_seed: 20260901
+  training_seeds: [42, 43, 44]
+  deterministic: true
+
+data:
+  dataset: medqa
+  medqa_id: openlifescienceai/medqa
+  medmcqa_id: openlifescienceai/medmcqa
+  revision: main  # prepare-data resolves and records the immutable Hub SHA
+  num_clients: 5
+  dirichlet_alpha: 0.5
+  medqa_fit_ratio: 0.70
+  medmcqa_fit_ratio: 0.80
+  min_support_per_client: 5
+  max_train_samples: null
+  max_validation_samples: null
+  max_test_samples: null
+
+model:
+  id: Qwen/Qwen3-0.6B
+  revision: main  # replace with an immutable commit SHA for sealed experiments
+  dtype: bfloat16
+  attention: sdpa
+  trust_remote_code: false
+  gradient_checkpointing: false  # faster for 0.6B; enable only if a longer context OOMs
+  use_cache: false
+  max_seq_length: 2048
+  max_new_tokens: 64
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+training:
+  local_epochs: 1
+  fl_round_candidates: [4, 6, 8]
+  learning_rate: 0.0002
+  weight_decay: 0.0
+  train_micro_batch_size: 8
+  gradient_accumulation_steps: 2
+  max_grad_norm: 1.0
+  optimizer: adamw_torch_fused
+  dataloader_num_workers: 4
+  pin_memory: true
+  save_every_steps: 250
+  checkpoint_keep: 3
+
+retrieval:
+  encoder_id: BAAI/bge-small-en-v1.5
+  encoder_revision: main  # replace with an immutable commit SHA before test
+  top_k: 5
+  initial_pool: 50
+  expanded_pool: 100
+  duplicate_similarity_threshold: 0.92
+  lexical_jaccard_threshold: 0.85
+  alpha: 1.0
+  beta: 0.15
+  gamma: 0.20
+
+evaluation:
+  semantic_match_threshold: 0.82
+  semantic_margin: 0.05
+  bootstrap_samples: 10000
+  confidence_level: 0.95
+  generation_batch_size: 16
+  # Qwen3 has a large vocabulary; 8 avoids a large [B, T, V] logits spike on 24 GB VRAM.
+  likelihood_candidate_batch_size: 8
+
+hardware:
+  device: cuda
+  tf32: true
+  bf16: true
+  compile: false
+  empty_cache_between_clients: true

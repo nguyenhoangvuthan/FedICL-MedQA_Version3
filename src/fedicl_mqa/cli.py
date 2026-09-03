@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import logging
 import os
 import re
 from collections.abc import Sequence
@@ -619,6 +620,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[0, 1],
         help="run on this physical GPU; leaves the sealed config hash untouched",
     )
+    gpu.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress per-batch training progress; warnings and errors still print",
+    )
 
     prepare = subparsers.add_parser(
         "prepare-data", parents=[gpu], help="download, normalize and partition data"
@@ -711,6 +717,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Progress logging is off by default in the library, so configure a handler here.
+    # Training runs for hours with no other output; without this the console cannot
+    # distinguish a working run from a hung one.
+    logging.basicConfig(
+        level=logging.WARNING if getattr(args, "quiet", False) else logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     try:
         # Restrict the process to one GPU before anything creates a CUDA context. The
         # selected device then appears as cuda:0, so config.hardware.device stays the

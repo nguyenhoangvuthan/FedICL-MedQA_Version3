@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import math
 import time
 from collections.abc import Sequence
@@ -67,6 +69,14 @@ class AnswerCollator:
         return {key: torch.tensor(value, dtype=torch.long) for key, value in result.items()}
 
 
+logger = logging.getLogger(__name__)
+
+# Progress cadence, in optimizer steps. Deliberately a module constant rather than a
+# TrainingSettings field: Config.hash covers every config field, so adding one here
+# would change the sealed hash and invalidate prepared data and existing checkpoints.
+LOG_EVERY_STEPS = 10
+
+
 def create_optimizer(model: Any, config: Config) -> Any:
     import torch
 
@@ -124,7 +134,16 @@ def train(
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats() if torch.cuda.is_available() else None
 
+    logger.info(
+        "%s: %d examples, starting at epoch %d/%d, batch %d",
+        kind,
+        len(examples),
+        min(state.epoch + 1, epochs),
+        epochs,
+        state.batch_in_epoch,
+    )
     for epoch in range(state.epoch, epochs):
+        epoch_started = time.perf_counter()
         generator = torch.Generator()
         generator.manual_seed(seed + epoch)
         loader = DataLoader(
@@ -164,6 +183,17 @@ def train(
                 state.global_step += 1
                 state.optimizer_updates += 1
                 state.batch_in_epoch = batch_index + 1
+                if state.global_step % LOG_EVERY_STEPS == 0:
+                    logger.info(
+                        "%s: epoch %d/%d batch %d/%d step %d loss %.4f",
+                        kind,
+                        epoch + 1,
+                        epochs,
+                        batch_index + 1,
+                        total_batches,
+                        state.global_step,
+                        float(loss.item() * group_size),
+                    )
                 if (
                     checkpoint_manager
                     and config.training.save_every_steps > 0
@@ -181,14 +211,24 @@ def train(
                     )
         state.epoch = epoch + 1
         state.batch_in_epoch = 0
+        logger.info(
+            "%s: epoch %d/%d complete in %.1fs, step %d",
+            kind,
+            state.epoch,
+            epochs,
+            time.perf_counter() - epoch_started,
+            state.global_step,
+        )
         if checkpoint_manager:
             state.elapsed_seconds = initial_elapsed_seconds + (time.perf_counter() - started)
+            name = f"checkpoint-epoch-{state.epoch:04d}-step-{state.global_step:08d}"
             checkpoint_manager.save(
-                f"checkpoint-epoch-{state.epoch:04d}-step-{state.global_step:08d}",
+                name,
                 model=model,
                 optimizer=optimizer,
                 trainer_state=state,
             )
+            logger.info("%s: saved %s", kind, name)
 
     elapsed = time.perf_counter() - started
     state.elapsed_seconds = initial_elapsed_seconds + elapsed

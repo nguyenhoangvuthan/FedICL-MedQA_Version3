@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -114,3 +115,37 @@ class CheckpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelativeRootTests(unittest.TestCase):
+    """output_dir in the shipped configs is relative, so root often is too."""
+
+    def _manager(self, root: str | Path) -> CheckpointManager:
+        return CheckpointManager(
+            root, config_hash="config", model_id="model", model_revision="sha"
+        )
+
+    def test_resolve_accepts_what_latest_returns(self) -> None:
+        """latest() hands load() a rooted path; resolve() must not root it a second time."""
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            os.chdir(temporary)
+            self.addCleanup(os.chdir, previous)
+            manager = self._manager(Path("outputs") / "a5000" / "local" / "client-0")
+            checkpoint = manager.root / "checkpoint-epoch-0001-step-00000235"
+            checkpoint.mkdir(parents=True)
+            self.assertEqual(manager.resolve(checkpoint), checkpoint.resolve())
+
+    def test_a_bare_name_is_still_read_as_root_relative(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = self._manager(Path(temporary) / "run")
+            checkpoint = manager.root / "checkpoint-0001"
+            checkpoint.mkdir(parents=True)
+            self.assertEqual(manager.resolve("checkpoint-0001"), checkpoint.resolve())
+
+    def test_root_is_absolute_so_paths_cannot_depend_on_the_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            os.chdir(temporary)
+            self.addCleanup(os.chdir, previous)
+            self.assertTrue(self._manager("outputs/a5000/local").root.is_absolute())

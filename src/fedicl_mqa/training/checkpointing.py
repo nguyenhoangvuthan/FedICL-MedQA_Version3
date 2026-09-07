@@ -48,7 +48,12 @@ class CheckpointManager:
         model_revision: str,
         keep: int | None = None,
     ) -> None:
-        self.root = Path(root)
+        # Absolute from the start. The shipped configs use a relative output_dir, and
+        # latest() hands load() a path built as root / name; resolve() then re-roots
+        # anything that is not absolute, so a relative root made that path root / root /
+        # name and every resume failed with a doubled path. Anchoring here also stops a
+        # checkpoint reference depending on the working directory the command ran from.
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.config_hash = config_hash
         self.model_id = model_id

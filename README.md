@@ -316,7 +316,7 @@ reused and only unfinished clients restart.
 Checkpoint layout:
 
 ```text
-outputs/a5000/checkpoints/<dataset>/
+outputs/a5000/training/<dataset>/
 ├── local/seed-42/client-0/checkpoint-.../
 ├── federated/seed-42/
 │   ├── global/checkpoint-round-0000/
@@ -328,6 +328,42 @@ outputs/a5000/checkpoints/<dataset>/
 
 Each checkpoint has SHA-256 hashes and the exact config hash, base model ID and immutable revision.
 A checkpoint is rejected if any artifact or configuration differs.
+
+### Recovering from a Windows CUDA abort
+
+If training ends with `Unhandled exception caught in c10/util/AbortHandler.h` and a
+`StorageImpl::~StorageImpl` / `TensorImpl::~TensorImpl` stack, the stack alone does not
+identify the failing CUDA operation. It does not establish an out-of-memory error or
+an allocator bug. PyTorch explains how asynchronous execution can obscure the original
+operation in its [CUDA debugging notes](https://docs.pytorch.org/docs/stable/notes/cuda.html#asynchronous-execution).
+
+The training loop now releases each batch's loss graph after backward, checks for
+non-finite loss/gradients before updating weights, and synchronizes CUDA on Windows
+before releasing graph/gradient tensors. These checks may reduce throughput. Catchable
+failures log the phase, epoch, batch, input shape, and last completed optimizer step;
+the failed batch is never checkpointed. This is a mitigation and diagnostic improvement,
+not a confirmed fix for every native CUDA abort or driver reset.
+
+In a fresh PowerShell process, use the same GPU as the interrupted run (append your
+original `--gpu` option if you used one):
+
+```powershell
+uv run fedicl-mqa doctor --config outputs/a5000/sealed_config.json
+uv run fedicl-mqa train --config outputs/a5000/sealed_config.json --mode centralized --all-seeds --fl-round 6 --resume auto --cuda-debug
+```
+
+The example resumes the six-epoch centralized run. Keep the original round count for
+other runs. If you used `pipeline`, rerun that command with `--cuda-debug` instead; it
+will retain its selected round and resume the remaining work. The CLI name is
+`fedicl-mqa` and the source config directory is `configs/`.
+
+`--cuda-debug` sets `CUDA_LAUNCH_BLOCKING=1`, enables Python/C++ fault traces before
+PyTorch loads, and preserves Python runtime tracebacks. It does not change the sealed
+config hash, optimizer, attention backend, or batch size, so existing checkpoints remain
+compatible. It slows execution; omit the flag in a fresh process after diagnosis, and
+do not use debug timings for throughput comparisons. Resume restores the last verified
+checkpoint, which can precede the last printed step. If the abort persists, retain the
+full traceback and `doctor` output to identify the underlying CUDA/driver failure.
 
 ## Evaluation arms
 

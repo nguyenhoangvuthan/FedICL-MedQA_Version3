@@ -178,7 +178,15 @@ class CheckpointManager:
         if self.root.resolve() not in resolved.parents:
             raise ValueError(f"checkpoint must be inside {self.root}")
         if not resolved.is_dir():
-            raise FileNotFoundError(resolved)
+            # A bare path told the reader nothing about which of the two likely causes
+            # applied: a pointer left behind by a pruned checkpoint, or a directory
+            # removed by hand.
+            raise FileNotFoundError(
+                f"checkpoint directory does not exist: {resolved}. It may have been "
+                f"pruned by training.checkpoint_keep or deleted, leaving a stale "
+                f"pointer in {self.root / 'last_checkpoint.txt'}; delete that file to "
+                f"start this run from scratch."
+            )
         return resolved
 
     def latest(self) -> Path | None:

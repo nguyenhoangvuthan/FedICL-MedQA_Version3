@@ -149,3 +149,30 @@ class RelativeRootTests(unittest.TestCase):
             os.chdir(temporary)
             self.addCleanup(os.chdir, previous)
             self.assertTrue(self._manager("outputs/a5000/local").root.is_absolute())
+
+
+class MissingCheckpointMessageTests(unittest.TestCase):
+    """A missing checkpoint printed only its path, which explained nothing."""
+
+    def _manager(self, root: str | Path) -> CheckpointManager:
+        return CheckpointManager(
+            root, config_hash="config", model_id="model", model_revision="sha"
+        )
+
+    def test_message_names_the_path_and_the_stale_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = self._manager(temporary)
+            with self.assertRaises(FileNotFoundError) as caught:
+                manager.resolve("checkpoint-epoch-0001-step-00000235")
+            message = str(caught.exception)
+            self.assertIn("checkpoint-epoch-0001-step-00000235", message)
+            self.assertIn("last_checkpoint.txt", message)
+            self.assertNotEqual(message, str(manager.root / "checkpoint-epoch-0001-step-00000235"))
+
+    def test_a_reference_outside_the_root_is_still_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = self._manager(Path(temporary) / "run")
+            outside = Path(temporary) / "elsewhere"
+            outside.mkdir()
+            with self.assertRaises(ValueError):
+                manager.resolve(outside)

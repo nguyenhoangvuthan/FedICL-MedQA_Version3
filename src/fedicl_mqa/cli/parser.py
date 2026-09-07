@@ -12,12 +12,12 @@ from fedicl_mqa.cli.commands.evaluation import (
     command_evaluate_arm,
     command_report,
 )
-from fedicl_mqa.cli.pipeline import command_pipeline
 from fedicl_mqa.cli.commands.training import (
     command_build_priors,
     command_select_round,
     command_train,
 )
+from fedicl_mqa.cli.pipeline import command_pipeline
 from fedicl_mqa.evaluation.arms import ARMS
 
 
@@ -37,6 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet",
         action="store_true",
         help="suppress per-batch training progress; warnings and errors still print",
+    )
+    gpu.add_argument(
+        "--cuda-debug",
+        action="store_true",
+        help="use synchronous CUDA launches and full tracebacks (slower; config hash unchanged)",
     )
 
     prepare = subparsers.add_parser(

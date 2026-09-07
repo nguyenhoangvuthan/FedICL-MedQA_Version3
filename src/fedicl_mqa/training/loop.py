@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import logging
-
 import math
+import sys
 import time
 from collections.abc import Sequence
 from typing import Any
 
-from fedicl_mqa.training.checkpointing import CheckpointManager, TrainerState
 from fedicl_mqa.core.config import Config
+from fedicl_mqa.core.schema import MCQExample
 from fedicl_mqa.modeling.loader import ModelBundle, chat_prefix, gpu_telemetry
 from fedicl_mqa.modeling.prompting import build_prompt, training_completion
-from fedicl_mqa.core.schema import MCQExample
+from fedicl_mqa.training.checkpointing import CheckpointManager, TrainerState
 
 
 class AnswerOnlyDataset:
@@ -77,6 +77,14 @@ logger = logging.getLogger(__name__)
 LOG_EVERY_STEPS = 10
 
 
+def _synchronize_before_release(device: Any) -> None:
+    """Surface queued CUDA failures before tensor destructors run on Windows."""
+    if sys.platform == "win32" and device.type == "cuda":
+        import torch
+
+        torch.cuda.synchronize(device)
+
+
 def create_optimizer(model: Any, config: Config) -> Any:
     import torch
 
@@ -124,6 +132,14 @@ def train(
                 latest, model=model, optimizer=optimizer, restore_rng=True
             )
             state = loaded.trainer_state
+            logger.info(
+                "%s: resumed %s (step %d, epoch %d, batch %d)",
+                kind,
+                latest,
+                state.global_step,
+                state.epoch + 1,
+                state.batch_in_epoch,
+            )
 
     model.train()
     model.config.use_cache = False
@@ -161,25 +177,61 @@ def train(
         for batch_index, batch in enumerate(loader):
             if batch_index < skip_batches:
                 continue
-            batch = {
-                key: value.to(bundle.device, non_blocking=True) for key, value in batch.items()
-            }
             group_start = (
                 batch_index // config.training.gradient_accumulation_steps
             ) * config.training.gradient_accumulation_steps
             group_size = min(
                 config.training.gradient_accumulation_steps, total_batches - group_start
             )
-            loss = model(**batch).loss / group_size
-            loss.backward()
-            state.target_exposures += int(batch["input_ids"].shape[0])
             should_step = (
                 batch_index + 1
             ) % config.training.gradient_accumulation_steps == 0 or batch_index + 1 == total_batches
+            # Keep diagnostic context on the host: querying CUDA after a device failure
+            # can mask the original exception with another allocator/driver error.
+            batch_shape = tuple(batch["input_ids"].shape)
+            phase = "batch transfer"
+            try:
+                batch = {
+                    key: value.to(bundle.device, non_blocking=True) for key, value in batch.items()
+                }
+                phase = "forward"
+                loss = model(**batch).loss / group_size
+                loss_value = float(loss.detach().item() * group_size)
+                if not math.isfinite(loss_value):
+                    raise RuntimeError(f"non-finite training loss: {loss_value}")
+                phase = "backward"
+                loss.backward()
+                _synchronize_before_release(bundle.device)
+                # Logging/checkpoint metadata must not keep an autograd graph alive
+                # until the next forward pass (or the end of the epoch).
+                del loss
+                if should_step:
+                    phase = "optimizer step"
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.training.max_grad_norm, error_if_nonfinite=True
+                    )
+                    optimizer.step()
+                    _synchronize_before_release(bundle.device)
+                    optimizer.zero_grad(set_to_none=True)
+            except RuntimeError:
+                logger.exception(
+                    "%s: training failed during %s at epoch %d/%d batch %d/%d "
+                    "(last completed step %d, input shape %s). "
+                    "Restart with --resume auto --cuda-debug to diagnose from the last "
+                    "committed checkpoint; no checkpoint is saved from this failed batch.",
+                    kind,
+                    phase,
+                    epoch + 1,
+                    epochs,
+                    batch_index + 1,
+                    total_batches,
+                    state.global_step,
+                    batch_shape,
+                )
+                raise
+            state.target_exposures += int(batch_shape[0])
+            del batch
             if should_step:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.training.max_grad_norm)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
                 state.global_step += 1
                 state.optimizer_updates += 1
                 state.batch_in_epoch = batch_index + 1
@@ -192,7 +244,7 @@ def train(
                         batch_index + 1,
                         total_batches,
                         state.global_step,
-                        float(loss.item() * group_size),
+                        loss_value,
                     )
                 if (
                     checkpoint_manager
@@ -207,7 +259,7 @@ def train(
                         model=model,
                         optimizer=optimizer,
                         trainer_state=state,
-                        extra={"last_loss": float(loss.item() * group_size)},
+                        extra={"last_loss": loss_value},
                     )
         state.epoch = epoch + 1
         state.batch_in_epoch = 0

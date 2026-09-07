@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import faulthandler
 import logging
 import os
 from collections.abc import Sequence
@@ -29,17 +30,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         # literal string "cuda" and the sealed config hash is unaffected.
         if getattr(args, "gpu", None) is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+        if getattr(args, "cuda_debug", False):
+            # These must be set before a command imports torch or initializes CUDA.
+            os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+            os.environ["TORCH_SHOW_CPP_STACKTRACES"] = "1"
+            os.environ["PYTHONFAULTHANDLER"] = "1"
+            faulthandler.enable()
+            logging.getLogger(__name__).warning(
+                "CUDA debugging enabled: synchronous launches are slower; "
+                "do not use this run to compare throughput."
+            )
         # Authenticate before any command reaches the Hub. Every Hub client in this
         # project reads the token from the environment, so this single call covers
         # model, dataset and encoder downloads alike.
         apply_hf_token()
         args.func(args)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        # Let a RuntimeError keep its traceback under --cuda-debug; parser.error
+        # would reduce it to one line, which is the opposite of what the flag is for.
+        if getattr(args, "cuda_debug", False) and isinstance(exc, RuntimeError):
+            raise
         parser.error(str(exc))
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":

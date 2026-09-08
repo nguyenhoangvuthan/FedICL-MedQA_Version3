@@ -25,7 +25,7 @@ from fedicl_mqa.core.config import Config
 from fedicl_mqa.core.io import read_json
 from fedicl_mqa.data.preparation import load_partition
 from fedicl_mqa.modeling.loader import chat_prefix
-from fedicl_mqa.modeling.prompting import build_prompt
+from fedicl_mqa.modeling.prompting import build_prompt, training_completion
 from fedicl_mqa.core.schema import MCQExample
 
 
@@ -43,6 +43,11 @@ def _tokenizer(config: Config):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="the sealed_config.json of the run")
+    parser.add_argument(
+        "--training-lengths",
+        action="store_true",
+        help="measure fit-split training sequences, which carry no exemplars",
+    )
     parser.add_argument(
         "--pool-worst-case",
         action="store_true",
@@ -66,6 +71,29 @@ def main() -> None:
 
     tokenizer = _tokenizer(config)
     budget = config.model.max_seq_length - config.model.max_new_tokens
+
+    if args.training_lengths:
+        # Training builds a prompt with no exemplars, so its sequences are far shorter
+        # than an ICL prompt. If none reach max_seq_length then no training sequence was
+        # ever truncated, and raising the limit would not change a single training input
+        # even though it does change the config hash.
+        lengths = []
+        for client in load_partition(data_root, expected_config_hash=config.hash).values():
+            for example in client["fit"]:
+                rendered = build_prompt(example)
+                lengths.append(
+                    len(chat_prefix(tokenizer, rendered, tokenize=True))
+                    + len(tokenizer(training_completion(example))["input_ids"])
+                )
+        lengths.sort()
+        print(f"training sequences : {len(lengths)}")
+        print(f"truncation limit   : {config.model.max_seq_length}")
+        print(f"median             : {lengths[len(lengths) // 2]}")
+        print(f"p95                : {lengths[int(len(lengths) * 0.95)]}")
+        print(f"max                : {lengths[-1]}")
+        truncated = sum(1 for value in lengths if value > config.model.max_seq_length)
+        print(f"truncated at 2048  : {truncated}")
+        return
     counts: list[int] = []
     offenders: list[tuple[str, str, int]] = []
     per_split: Counter[str] = Counter()

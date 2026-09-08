@@ -365,6 +365,42 @@ do not use debug timings for throughput comparisons. Resume restores the last ve
 checkpoint, which can precede the last printed step. If the abort persists, retain the
 full traceback and `doctor` output to identify the underlying CUDA/driver failure.
 
+## Migrating a sealed run
+
+`Config.hash` covers every configuration field, so raising an evaluation-only limit
+rejects checkpoints the change cannot affect. `model.max_seq_length` is one such field:
+every use of it fails closed rather than truncating. The tokenizer runs with
+`truncation=False`, and training, generation and likelihood scoring each raise instead of
+shortening an input, so anything that fitted the old limit is unchanged under a larger
+one.
+
+Measure before deciding. The diagnostic loads the tokenizer but not the model, so it
+needs no GPU:
+
+```powershell
+python scripts\check_prompt_budget.py --config outputs\a5000\sealed_config.json
+python scripts\check_prompt_budget.py --config outputs\a5000\sealed_config.json --training-lengths
+```
+
+If no training sequence approaches the limit, the trained checkpoints are valid under the
+larger value and only the recorded hash stands in the way:
+
+```powershell
+python scripts\migrate_context_budget.py --config outputs\a5000\sealed_config.json --set model.max_seq_length=4096
+python scripts\migrate_context_budget.py --config outputs\a5000\sealed_config.json --set model.max_seq_length=4096 --apply
+```
+
+The first form is a dry run. The script refuses any field outside its allowlist, so it
+cannot re-stamp a change that would alter training, and it rewrites `hashes.json`
+alongside each `state.json` and `file_hashes.json` alongside the partition manifest,
+since each of those manifests covers the file being edited. It leaves a record under
+`outputs/<name>/migrations/` naming the old and new hash, the fields changed and every
+file touched.
+
+Report the migration wherever the run is reported. It rewrites an integrity stamp, which
+is defensible only because the change is provably unable to alter a training input, and
+only while that evidence travels with the result.
+
 ## Evaluation arms
 
 ### Every arm at once

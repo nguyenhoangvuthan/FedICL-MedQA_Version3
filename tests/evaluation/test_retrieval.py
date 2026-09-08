@@ -30,6 +30,19 @@ class _HashEncoder:
         return np.asarray(values, dtype=np.float32)
 
 
+class _LengthTokenizer:
+    """Stands in for the answer model's tokenizer: one id per four characters."""
+
+    name_or_path = "test-tokenizer"
+
+    def __init__(self, divisor: int = 4) -> None:
+        self.divisor = divisor
+
+    def apply_chat_template(self, messages, *, tokenize: bool, **kwargs):
+        text = "".join(message["content"] for message in messages)
+        return [0] * (len(text) // self.divisor) if tokenize else text
+
+
 def item(index: int, question: str, *, subject: str = "general") -> MCQExample:
     return MCQExample(
         example_id=f"train-{index}",
@@ -144,11 +157,70 @@ class RetrievalTests(unittest.TestCase):
             }
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "audit.json"
-            result = audit_retrieval_cohort(config, partitions, output, encoder=_HashEncoder())
+            result = audit_retrieval_cohort(
+                config, partitions, output, encoder=_HashEncoder(),
+                tokenizer=_LengthTokenizer(),
+            )
             self.assertEqual(result["query_count"], 10)
             self.assertTrue(
                 all(len(row["top5_exemplar_ids"]) == 5 for row in read_json(output)["queries"])
             )
+
+
+    def test_audit_rejects_a_cohort_whose_prompts_exceed_the_budget(self) -> None:
+        """Five eligible exemplars can still build a prompt too long to evaluate."""
+        config = Config()
+        config.retrieval.duplicate_similarity_threshold = 1.01
+        config.retrieval.lexical_jaccard_threshold = 1.01
+        config.model.max_seq_length = 64
+        config.model.max_new_tokens = 8
+        partitions = {
+            0: {
+                "fit": [],
+                "support": [item(index, f"support {index}") for index in range(6)],
+                "validation": [
+                    MCQExample("validation-0", "query", ("a", "b", "c", "d"), 0, "validation")
+                ],
+                "test": [],
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "audit.json"
+            with self.assertRaises(ValueError) as caught:
+                audit_retrieval_cohort(
+                    config, partitions, output, encoder=_HashEncoder(),
+                    tokenizer=_LengthTokenizer(divisor=1),
+                )
+            message = str(caught.exception)
+            self.assertIn("budget", message)
+            self.assertIn("max_seq_length", message)
+            # The manifest is still written, so the offending items can be inspected.
+            self.assertEqual(read_json(output)["over_budget_queries"], 1)
+
+    def test_audit_records_the_worst_case_prompt_length(self) -> None:
+        config = Config()
+        config.retrieval.duplicate_similarity_threshold = 1.01
+        config.retrieval.lexical_jaccard_threshold = 1.01
+        partitions = {
+            0: {
+                "fit": [],
+                "support": [item(index, f"support {index}") for index in range(6)],
+                "validation": [
+                    MCQExample("validation-0", "query", ("a", "b", "c", "d"), 0, "validation")
+                ],
+                "test": [],
+            }
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "audit.json"
+            result = audit_retrieval_cohort(
+                config, partitions, output, encoder=_HashEncoder(),
+                tokenizer=_LengthTokenizer(),
+            )
+        self.assertEqual(result["over_budget_queries"], 0)
+        self.assertEqual(result["prompt_budget"], 4096 - 64)
+        self.assertGreater(result["longest_prompt_tokens"], 0)
+        self.assertGreater(result["queries"][0]["worst_case_prompt_tokens"], 0)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,10 @@ class ModelSettings:
     trust_remote_code: bool = False
     gradient_checkpointing: bool = False
     use_cache: bool = False
-    max_seq_length: int = 2048
+    # 5-shot ICL over MedQA vignettes measured a median prompt of 1613 tokens, and 13%
+    # of a sealed cohort exceeded a 2048 budget. Every use of this value fails closed
+    # rather than truncating, so too small a value stops a run rather than corrupting it.
+    max_seq_length: int = 4096
     max_new_tokens: int = 64
 
 

@@ -27,7 +27,9 @@ model:
   trust_remote_code: false
   gradient_checkpointing: false  # faster for 0.6B; enable only if a longer context OOMs
   use_cache: false
-  max_seq_length: 2048
+  # 5-shot ICL on MedQA vignettes needs well over 2048: the median prompt measured
+  # 1613 tokens and 13% of the cohort exceeded a 2048 budget. Qwen3 supports far more.
+  max_seq_length: 4096
   max_new_tokens: 64
 
 lora:

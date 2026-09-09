@@ -3,33 +3,31 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
-from fedicl_mqa.training.checkpointing import CheckpointManager
-from fedicl_mqa.core.config import Config
-from fedicl_mqa.data.preparation import (
-    build_partition,
-    load_native_dataset,
-    load_partition,
-    materialize_partition,
-    resolve_hub_revision,
-)
-from fedicl_mqa.core.io import read_json, write_json
-from fedicl_mqa.evaluation.priors import (
-    leave_one_client_out_weakness,
-    load_prediction_rows,
-    write_priors,
-)
-from fedicl_mqa.training.workflows import train_centralized, train_federated, train_local_clients
 from fedicl_mqa.cli.paths import (
     checkpoint_root,
     data_root,
     evaluation_dir,
+    matched_local_root,
     priors_path,
     seal_config,
     selected_round,
     summary_path,
 )
+from fedicl_mqa.core.config import Config
+from fedicl_mqa.core.io import file_sha256, read_json, write_json
+from fedicl_mqa.data.preparation import (
+    load_partition,
+)
+from fedicl_mqa.evaluation.priors import (
+    controlled_weakness,
+    leave_one_client_out_weakness,
+    load_prediction_rows,
+    write_priors,
+)
+from fedicl_mqa.training.checkpointing import CheckpointManager
+from fedicl_mqa.training.workflows import train_centralized, train_federated, train_local_clients
+
 
 def _requested_seeds(config: Config, args: argparse.Namespace) -> list[int]:
     if getattr(args, "all_seeds", False):
@@ -43,11 +41,12 @@ def _requested_seeds(config: Config, args: argparse.Namespace) -> list[int]:
 
 def command_train(args: argparse.Namespace) -> None:
     config = seal_config(args.config)
-    if args.fl_round is not None and args.mode != "centralized":
-        raise ValueError("--fl-round is only valid for centralized training")
+    if args.fl_round is not None and args.mode not in {"centralized", "local-matched"}:
+        raise ValueError("--fl-round is only valid for centralized or local-matched training")
     clients = load_partition(data_root(config), expected_config_hash=config.hash)
     client_fit = {client: values["fit"] for client, values in clients.items()}
     for seed in _requested_seeds(config, args):
+        telemetry_root = checkpoint_root(config, args.mode)
         if args.mode == "local":
             telemetry = train_local_clients(
                 config,
@@ -55,6 +54,17 @@ def command_train(args: argparse.Namespace) -> None:
                 seed=seed,
                 output_root=checkpoint_root(config, "local"),
                 resume=args.resume,
+            )
+        elif args.mode == "local-matched":
+            fl_round = args.fl_round or selected_round(config)
+            telemetry_root = matched_local_root(config, fl_round)
+            telemetry = train_local_clients(
+                config,
+                client_fit,
+                seed=seed,
+                output_root=telemetry_root,
+                resume=args.resume,
+                fl_rounds=fl_round,
             )
         elif args.mode == "federated":
             trainer = train_federated(
@@ -91,7 +101,7 @@ def command_train(args: argparse.Namespace) -> None:
                 resume=args.resume,
             )
         write_json(
-            checkpoint_root(config, args.mode) / f"seed-{seed}" / "telemetry.json",
+            telemetry_root / f"seed-{seed}" / "telemetry.json",
             telemetry,
         )
         print(f"Completed {args.mode} training for seed {seed}")
@@ -113,6 +123,17 @@ def command_select_round(args: argparse.Namespace) -> None:
                     round_index=round_index,
                 )
             )
+            if config.controls is not None:
+                from fedicl_mqa.cli.commands.evaluation import validate_summary_identity
+
+                validate_summary_identity(
+                    config,
+                    summary,
+                    arm="F0",
+                    seed=seed,
+                    split="validation",
+                    round_index=round_index,
+                )
             value = float(summary["pipeline_accuracy"])
             round_scores.append(value)
             per_seed.setdefault(str(seed), {})[str(round_index)] = value
@@ -139,15 +160,64 @@ def command_build_priors(args: argparse.Namespace) -> None:
         raise ValueError(f"seed must be one of {config.experiment.training_seeds}")
     round_index = args.round or selected_round(config)
     predictions = (
-        evaluation_dir(
-            config, "F0", seed=args.seed, split="validation", round_index=round_index
-        )
+        evaluation_dir(config, "F0", seed=args.seed, split="validation", round_index=round_index)
         / "predictions.jsonl"
     )
-    priors = leave_one_client_out_weakness(
-        load_prediction_rows([predictions]), num_clients=config.data.num_clients
-    )
     output = priors_path(config, seed=args.seed, round_index=round_index)
-    write_priors(output, priors)
-    print(f"Wrote leave-one-client-out prior to {output}")
+    rows = load_prediction_rows([predictions])
+    audit = None
+    if config.controls is not None:
+        clients = load_partition(data_root(config), expected_config_hash=config.hash)
+        summary_file = predictions.with_name("summary.json")
+        summary = read_json(summary_file)
+        if (
+            summary.get("config_hash"),
+            summary.get("arm"),
+            summary.get("split"),
+            summary.get("seed"),
+        ) != (config.hash, "F0", "validation", args.seed):
+            raise ValueError("prior source must be this seed's F0 validation summary")
+        from fedicl_mqa.cli.commands.evaluation import validate_summary_identity
 
+        validate_summary_identity(
+            config, summary, arm="F0", seed=args.seed, split="validation", round_index=round_index
+        )
+        expected = {
+            q.example_id: (c, q) for c, roles in clients.items() for q in roles["validation"]
+        }
+        if {r["prediction"]["example_id"] for r in rows} != expected.keys():
+            raise ValueError("prior predictions do not match the complete validation cohort")
+        for row in rows:
+            p = row["prediction"]
+            client, q = expected[p["example_id"]]
+            if (p["client_id"], p["subject"], p["gold"], p["seed"]) != (
+                client,
+                q.subject,
+                q.label,
+                args.seed,
+            ):
+                raise ValueError("prior validation metadata differs from prepared data")
+        priors, audit = controlled_weakness(
+            rows,
+            support_subjects={
+                c: {q.subject for q in roles["support"]} for c, roles in clients.items()
+            },
+            min_count=config.controls.min_validation_per_subject,
+        )
+        audit.update(
+            {
+                "config_hash": config.hash,
+                "seed": args.seed,
+                "round": round_index,
+                "source_split": "validation",
+                "predictions_sha256": file_sha256(predictions),
+                "summary_sha256": file_sha256(summary_file),
+            }
+        )
+    else:
+        priors = leave_one_client_out_weakness(rows, num_clients=config.data.num_clients)
+    write_priors(output, priors)
+    if audit is not None:
+        audit["prior_sha256"] = file_sha256(output)
+        write_json(output.with_suffix(".audit.json"), audit)
+    print(f"Wrote leave-one-client-out prior to {output}")

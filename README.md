@@ -1,5 +1,12 @@
 # FedICL-MQA
 
+For the new **MedMCQA controlled study** (native subjects, Local matched to FL,
+separate diversity/prior arms and shuffled-prior placebo), use
+[`configs/a5000-medmcqa-controls.yaml`](configs/a5000-medmcqa-controls.yaml).
+See [the protocol and run commands](docs/controlled-medmcqa-experiments.md).
+The historical eight-arm MedQA workflow below remains available.
+
+
 Implementation of the native-MCQ experiment contract in
 [`docs/superpowers/specs/2026-09-01-fedicl-mqa-final-prompt.md`](docs/superpowers/specs/2026-09-01-fedicl-mqa-final-prompt.md).
 

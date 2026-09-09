@@ -22,6 +22,19 @@ PRIMARY_CONTRASTS = {
     "system": ("L1", "F2"),
 }
 
+CONTROLLED_CONTRASTS = {
+    "base_icl": ("B0", "B1"),
+    "matched_local_icl": ("LM0", "LM1"),
+    "fl_icl": ("F0", "F1"),
+    "fl_matched": ("LM0", "F0"),
+    "system_matched": ("LM1", "F2"),
+    "diversity_without_prior": ("F1", "FD"),
+    "prior_without_diversity": ("F1", "FP"),
+    "prior_with_diversity": ("FD", "F2"),
+    "diversity_with_prior": ("FP", "F2"),
+    "prior_vs_shuffled": ("FS", "F2"),
+}
+
 
 def read_predictions(path: str | Path) -> list[Prediction]:
     result: list[Prediction] = []
@@ -40,9 +53,11 @@ def build_contrast_report(
     samples: int,
     confidence: float,
     bootstrap_seed: int,
+    controlled: bool = False,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {"primary": {}, "descriptive": {}}
-    for name, (left_arm, right_arm) in PRIMARY_CONTRASTS.items():
+    contrasts = CONTROLLED_CONTRASTS if controlled else PRIMARY_CONTRASTS
+    for name, (left_arm, right_arm) in contrasts.items():
         left = arm_predictions[left_arm]
         right = arm_predictions[right_arm]
         result = _contrast(
@@ -75,7 +90,9 @@ def build_contrast_report(
 
     if "C0" in arm_predictions and "F0" in arm_predictions:
         left, right = arm_predictions["F0"], arm_predictions["C0"]
-        seeds = (set(left) & set(right)) - {None}
+        if left.keys() != right.keys():
+            raise ValueError("centralized and federated arms must have identical seed coverage")
+        seeds = set(left) - {None}
         report["descriptive"]["central"] = hierarchical_paired_bootstrap(
             {seed: left[seed] for seed in seeds},
             {seed: right[seed] for seed in seeds},
@@ -102,6 +119,8 @@ def _contrast(
             confidence=confidence,
             seed=bootstrap_seed,
         )
+    if None not in left and None not in right and left.keys() != right.keys():
+        raise ValueError("both arms must contain identical training seed IDs")
     trained_seeds = (set(left) - {None}) & (set(right) - {None})
     if not trained_seeds:
         trained_seeds = (set(left) | set(right)) - {None}

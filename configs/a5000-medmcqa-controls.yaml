@@ -1,0 +1,40 @@
+# New controlled study. Historical MedQA outputs/checkpoints stay under outputs/a5000.
+experiment:
+  name: fedicl_mqa_medmcqa_controls
+  output_dir: outputs/a5000-medmcqa-controls
+  data_seed: 20260901
+  training_seeds: [42, 43, 44]
+  deterministic: true
+
+data:
+  dataset: medmcqa
+  medmcqa_id: openlifescienceai/medmcqa
+  revision: main  # prepare-data freezes the immutable Hub revision
+  num_clients: 5
+  dirichlet_alpha: 0.5
+  medmcqa_fit_ratio: 0.8
+  min_support_per_client: 5
+  max_train_samples: null
+  max_validation_samples: null
+  max_test_samples: null
+
+# Opt-in: native subjects, train-derived validation, full factorial reranking controls,
+# and Local matched to the selected FL round. All these fields enter the new run hash.
+controls:
+  medmcqa_validation_fraction: 0.10
+  min_validation_per_subject: 10
+
+model:
+  id: Qwen/Qwen3-0.6B
+  revision: main
+  max_seq_length: 4096
+  max_new_tokens: 64
+
+# Other model, LoRA, optimization, retrieval and hardware settings use the existing
+# A5000 defaults. beta/gamma are fixed before validation/test, not fitted to results.
+retrieval:
+  encoder_id: BAAI/bge-small-en-v1.5
+  encoder_revision: main
+  alpha: 1.0
+  beta: 0.15
+  gamma: 0.20

@@ -91,6 +91,11 @@ def checkpoint_root(config: Config, family: str) -> Path:
     return output_root(config) / "training" / config.data.dataset / family
 
 
+def matched_local_root(config: Config, round_index: int | None = None) -> Path:
+    selected = round_index if round_index is not None else selected_round(config)
+    return checkpoint_root(config, "local-matched") / f"round-{selected}"
+
+
 def arms_root(config: Config) -> Path:
     return output_root(config) / "arms" / config.data.dataset
 

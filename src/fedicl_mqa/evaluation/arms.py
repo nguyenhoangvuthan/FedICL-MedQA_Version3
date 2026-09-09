@@ -8,19 +8,20 @@ from pathlib import Path
 from typing import Any
 
 from fedicl_mqa.core.config import Config
-from fedicl_mqa.core.io import atomic_write_text, write_json
+from fedicl_mqa.core.io import atomic_write_text, file_sha256, write_json
+from fedicl_mqa.core.schema import MCQExample
 from fedicl_mqa.data.leakage import assert_no_support_leakage
 from fedicl_mqa.data.matching import AnswerMatcher
 from fedicl_mqa.evaluation.metrics import Prediction, evaluation_summary, expected_calibration_error
-from fedicl_mqa.modeling.loader import GenerationEngine, ModelBundle, chat_prefix, gpu_telemetry
-from fedicl_mqa.modeling.prompting import Prompt, build_prompt
 from fedicl_mqa.evaluation.retrieval import (
     ClosureConstrainedRetriever,
+    RetrievedExample,
     SentenceTransformerEncoder,
     TextEncoder,
     client_aware_rerank,
 )
-from fedicl_mqa.core.schema import MCQExample
+from fedicl_mqa.modeling.loader import GenerationEngine, ModelBundle, chat_prefix, gpu_telemetry
+from fedicl_mqa.modeling.prompting import Prompt, build_prompt
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,8 @@ class ArmSpec:
     checkpoint_family: str
     uses_icl: bool
     client_aware: bool = False
+    diversity: bool = False
+    shuffled_prior: bool = False
 
 
 ARMS: dict[str, ArmSpec] = {
@@ -38,9 +41,40 @@ ARMS: dict[str, ArmSpec] = {
     "L1": ArmSpec("L1", "local", True),
     "F0": ArmSpec("F0", "federated", False),
     "F1": ArmSpec("F1", "federated", True),
-    "F2": ArmSpec("F2", "federated", True, True),
+    "F2": ArmSpec("F2", "federated", True, True, True),
     "C0": ArmSpec("C0", "centralized", False),
+    "LM0": ArmSpec("LM0", "local-matched", False),
+    "LM1": ArmSpec("LM1", "local-matched", True),
+    "FD": ArmSpec("FD", "federated", True, diversity=True),
+    "FP": ArmSpec("FP", "federated", True, client_aware=True),
+    "FS": ArmSpec("FS", "federated", True, True, True, True),
 }
+
+LEGACY_ARMS = ("B0", "B1", "C0", "F0", "F1", "F2", "L0", "L1")
+
+
+def active_arms(config: Config) -> tuple[str, ...]:
+    return tuple(sorted(ARMS)) if config.controls is not None else LEGACY_ARMS
+
+
+def select_exemplars(
+    pool: Sequence[RetrievedExample],
+    spec: ArmSpec,
+    config: Config,
+    subject_weights: Mapping[str, float],
+) -> list[RetrievedExample]:
+    if not spec.uses_icl:
+        return []
+    if spec.client_aware or spec.diversity:
+        return client_aware_rerank(
+            pool,
+            k=config.retrieval.top_k,
+            subject_weights=subject_weights,
+            alpha=config.retrieval.alpha,
+            beta=config.retrieval.beta if spec.diversity else 0.0,
+            gamma=config.retrieval.gamma if spec.client_aware else 0.0,
+        )
+    return list(pool[: config.retrieval.top_k])
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +107,7 @@ def evaluate_arm(
     before_client: BeforeClient | None = None,
     subject_weights: Mapping[int, Mapping[str, float]] | None = None,
     encoder: TextEncoder | None = None,
+    run_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     arm_name = arm.upper()
     if arm_name not in ARMS:
@@ -81,7 +116,18 @@ def evaluate_arm(
         raise ValueError("evaluation split must be validation or test")
     spec = ARMS[arm_name]
     if spec.client_aware and subject_weights is None:
-        raise ValueError("F2 requires frozen client subject weights")
+        raise ValueError(f"{arm_name} requires frozen client subject weights")
+    if spec.client_aware and config.controls is not None:
+        from fedicl_mqa.evaluation.priors import validate_prior_variation
+
+        validate_prior_variation(
+            subject_weights or {},
+            {c: {q.subject for q in roles["support"]} for c, roles in partitions.items()},
+        )
+    if spec.shuffled_prior:
+        from fedicl_mqa.evaluation.priors import shuffled_subject_prior
+
+        subject_weights = shuffled_subject_prior(subject_weights or {}, seed=int(seed))
 
     if encoder is None:
         encoder = SentenceTransformerEncoder(
@@ -96,6 +142,12 @@ def evaluate_arm(
     )
     engine = GenerationEngine(bundle, config)
     all_records: list[EvaluationRecord] = []
+    reranking_activity = {
+        "queries": 0,
+        "changed_from_top5": 0,
+        "changed_by_prior": 0,
+        "varying_candidate_prior": 0,
+    }
     started = time.perf_counter()
 
     for client_id in sorted(partitions):
@@ -136,17 +188,30 @@ def evaluate_arm(
         for query, pool in zip(queries, candidate_pools, strict=True):
             exemplars = []
             if retriever is not None:
-                if spec.client_aware:
-                    exemplars = client_aware_rerank(
-                        pool,
-                        k=config.retrieval.top_k,
-                        subject_weights=(subject_weights or {})[client_id],
-                        alpha=config.retrieval.alpha,
-                        beta=config.retrieval.beta,
-                        gamma=config.retrieval.gamma,
-                    )
-                else:
-                    exemplars = pool[: config.retrieval.top_k]
+                exemplars = select_exemplars(
+                    pool, spec, config, (subject_weights or {}).get(client_id, {})
+                )
+                if spec.client_aware or spec.diversity:
+                    reranking_activity["queries"] += 1
+                    chosen_ids = [x.example.example_id for x in exemplars]
+                    reranking_activity["changed_from_top5"] += chosen_ids != [
+                        x.example.example_id for x in pool[: config.retrieval.top_k]
+                    ]
+                    if spec.client_aware:
+                        weights = (subject_weights or {})[client_id]
+                        values = [weights.get(x.example.subject, 0.0) for x in pool]
+                        reranking_activity["varying_candidate_prior"] += max(values) > min(values)
+                        no_prior = client_aware_rerank(
+                            pool,
+                            k=config.retrieval.top_k,
+                            subject_weights={},
+                            alpha=config.retrieval.alpha,
+                            beta=config.retrieval.beta if spec.diversity else 0.0,
+                            gamma=0.0,
+                        )
+                        reranking_activity["changed_by_prior"] += chosen_ids != [
+                            x.example.example_id for x in no_prior
+                        ]
             prompt = build_prompt(query, exemplars)
             prompts.append(prompt)
             exemplar_ids.append(tuple(value.example.example_id for value in exemplars))
@@ -233,6 +298,8 @@ def evaluate_arm(
             "prompt_tokens_max": max(record.prompt_tokens for record in all_records),
             "retrieval_health": _retrieval_health(all_records),
             "hardware": gpu_telemetry(),
+            "reranking_activity": reranking_activity,
+            "run_metadata": dict(run_metadata or {}),
         }
     )
     output = Path(output_dir)
@@ -241,6 +308,8 @@ def evaluate_arm(
         json.dumps(record.to_dict(), ensure_ascii=False, sort_keys=True) for record in all_records
     ]
     atomic_write_text(output / "predictions.jsonl", "\n".join(lines) + "\n")
+    if config.controls is not None:
+        summary["predictions_sha256"] = file_sha256(output / "predictions.jsonl")
     write_json(output / "summary.json", summary)
     return summary
 

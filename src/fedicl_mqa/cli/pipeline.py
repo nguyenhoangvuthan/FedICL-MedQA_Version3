@@ -33,7 +33,8 @@ from fedicl_mqa.cli.commands import data as data_commands
 from fedicl_mqa.cli.commands import evaluation as evaluation_commands
 from fedicl_mqa.cli.commands import training as training_commands
 from fedicl_mqa.core.config import Config
-from fedicl_mqa.core.io import atomic_write_text
+from fedicl_mqa.core.io import atomic_write_text, read_json
+from fedicl_mqa.evaluation.arms import active_arms
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,15 @@ def build_steps(
                     config, "F0", seed=seed, split="validation", round_index=round_index
                 )
                 if target.exists() and not force:
+                    if config.controls is not None:
+                        evaluation_commands.validate_summary_identity(
+                            config,
+                            read_json(target),
+                            arm="F0",
+                            seed=seed,
+                            split="validation",
+                            round_index=round_index,
+                        )
                     continue
                 evaluation_commands.command_evaluate(
                     _namespace(
@@ -104,11 +114,26 @@ def build_steps(
 
     def build_priors() -> None:
         for seed in seeds:
-            training_commands.command_build_priors(
-                _namespace(sealed, seed=seed, round=None)
-            )
+            training_commands.command_build_priors(_namespace(sealed, seed=seed, round=None))
 
     def f0_validation_complete() -> bool:
+        if config.controls is not None:
+            for seed in seeds:
+                for round_index in rounds:
+                    target = paths.summary_path(
+                        config, "F0", seed=seed, split="validation", round_index=round_index
+                    )
+                    if not target.exists():
+                        return False
+                    evaluation_commands.validate_summary_identity(
+                        config,
+                        read_json(target),
+                        arm="F0",
+                        seed=seed,
+                        split="validation",
+                        round_index=round_index,
+                    )
+            return True
         return all(
             paths.summary_path(
                 config, "F0", seed=seed, split="validation", round_index=round_index
@@ -122,17 +147,68 @@ def build_steps(
             selected = paths.selected_round(config)
         except FileNotFoundError:
             return False
-        return all(
-            paths.priors_path(config, seed=seed, round_index=selected).exists() for seed in seeds
+        complete = all(
+            paths.priors_path(config, seed=seed, round_index=selected).exists()
+            and (
+                config.controls is None
+                or paths.priors_path(config, seed=seed, round_index=selected)
+                .with_suffix(".audit.json")
+                .exists()
+            )
+            for seed in seeds
+        )
+        if complete and config.controls is not None:
+            for seed in seeds:
+                evaluation_commands.verified_prior_metadata(config, seed=seed, round_index=selected)
+        return complete
+
+    def retrieval_complete() -> bool:
+        target = paths.data_root(config) / "retrieval_audit.json"
+        if not target.exists():
+            return False
+        if config.controls is None:
+            return True
+        audit = read_json(target)
+        return (
+            audit.get("config_hash") == config.hash
+            and audit.get("over_budget_queries") == 0
+            and audit.get("capacity_failures") == 0
         )
 
-    def evaluations_complete() -> bool:
-        for arm in evaluation_commands.ARMS:
+    def report_complete() -> bool:
+        target = paths.report_path(config)
+        if not target.exists():
+            return False
+        if config.controls is None:
+            return True
+        report = read_json(target).get("protocol", {})
+        if (report.get("config_hash"), report.get("selected_round")) != (
+            config.hash,
+            paths.selected_round(config),
+        ):
+            return False
+        recorded = report.get("prediction_sha256", {})
+        for arm in active_arms(config):
             for seed in evaluation_commands._effective_seeds(config, arm):
-                if not paths.summary_path(
-                    config, arm, seed=seed, split=split, round_index=None
-                ).exists():
+                summary = read_json(
+                    paths.summary_path(config, arm, seed=seed, split="test", round_index=None)
+                )
+                if recorded.get(f"{arm}/{paths.seed_label(seed)}") != summary.get(
+                    "predictions_sha256"
+                ):
                     return False
+        return True
+
+    def evaluations_complete() -> bool:
+        for arm in active_arms(config):
+            for seed in evaluation_commands._effective_seeds(config, arm):
+                target = paths.summary_path(config, arm, seed=seed, split=split, round_index=None)
+                if not target.exists():
+                    return False
+                if config.controls is not None:
+                    evaluation_commands.validate_summary_identity(
+                        config, read_json(target), arm=arm, seed=seed, split=split, round_index=None
+                    )
         return True
 
     return [
@@ -140,12 +216,21 @@ def build_steps(
             "prepare-data",
             # Only this step reads the YAML; prepare-data is what writes the sealed file.
             lambda: data_commands.command_prepare_data(_namespace(source)),
-            done(lambda: (paths.data_root(config) / "partition_manifest.json").exists()),
+            done(
+                lambda: (
+                    paths.data_root(config)
+                    / (
+                        "subject_audit.json"
+                        if config.controls is not None
+                        else "partition_manifest.json"
+                    )
+                ).exists()
+            ),
         ),
         Step(
             "audit-retrieval",
             lambda: data_commands.command_audit_retrieval(_namespace(sealed)),
-            done(lambda: (paths.data_root(config) / "retrieval_audit.json").exists()),
+            done(retrieval_complete),
         ),
         # Training resumes internally from its own checkpoints, so these always run and
         # return quickly when there is nothing left to do.
@@ -161,8 +246,22 @@ def build_steps(
                 ).exists()
             ),
         ),
+        *(
+            [Step("build-priors", build_priors, done(priors_complete))]
+            if config.controls is not None
+            else []
+        ),
         Step("train-centralized", train("centralized"), lambda: False),
-        Step("build-priors", build_priors, done(priors_complete)),
+        *(
+            [Step("train-local-matched", train("local-matched"), lambda: False)]
+            if config.controls is not None
+            else []
+        ),
+        *(
+            [Step("build-priors", build_priors, done(priors_complete))]
+            if config.controls is None
+            else []
+        ),
         Step(
             "evaluate-all",
             lambda: evaluation_commands.command_evaluate_all(
@@ -173,7 +272,7 @@ def build_steps(
         Step(
             "report",
             lambda: evaluation_commands.command_report(_namespace(sealed)),
-            done(lambda: paths.report_path(config).exists()),
+            done(report_complete),
         ),
     ]
 
@@ -245,9 +344,7 @@ def execute(config: Config, steps: list[Step]) -> list[dict[str, Any]]:
 
 def command_pipeline(args: argparse.Namespace) -> None:
     config = paths.seal_config(args.config)
-    steps = build_steps(
-        config, split=args.split, force=args.force, config_path=args.config
-    )
+    steps = build_steps(config, split=args.split, force=args.force, config_path=args.config)
     execute(config, steps)
     print(f"\nPipeline state: {paths.pipeline_state_path(config)}")
     print(f"Comparison table: {paths.comparison_path(config, 'md')}")

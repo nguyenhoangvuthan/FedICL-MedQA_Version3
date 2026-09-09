@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -117,6 +118,14 @@ class HardwareSettings:
 
 
 @dataclass(slots=True)
+class ControlSettings:
+    """Opt-in protocol; absent in historical configurations and hashes."""
+
+    medmcqa_validation_fraction: float = 0.10
+    min_validation_per_subject: int = 10
+
+
+@dataclass(slots=True)
 class Config:
     experiment: ExperimentSettings = field(default_factory=ExperimentSettings)
     data: DataSettings = field(default_factory=DataSettings)
@@ -126,6 +135,7 @@ class Config:
     retrieval: RetrievalSettings = field(default_factory=RetrievalSettings)
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
     hardware: HardwareSettings = field(default_factory=HardwareSettings)
+    controls: ControlSettings | None = None
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Config:
@@ -160,11 +170,28 @@ class Config:
             retrieval=_construct(RetrievalSettings, payload.get("retrieval")),
             evaluation=_construct(EvaluationSettings, payload.get("evaluation")),
             hardware=_construct(HardwareSettings, payload.get("hardware")),
+            controls=(
+                _construct(ControlSettings, payload["controls"])
+                if payload.get("controls") is not None
+                else None
+            ),
         )
         config.validate()
         return config
 
     def validate(self) -> None:
+        if self.controls is not None:
+            if self.data.dataset != "medmcqa":
+                raise ValueError("controlled protocol requires native MedMCQA subject labels")
+            if not 0 < self.controls.medmcqa_validation_fraction < 1:
+                raise ValueError("medmcqa_validation_fraction must be between zero and one")
+            if self.controls.min_validation_per_subject < 2:
+                raise ValueError("min_validation_per_subject must be at least two")
+            if any(
+                not math.isfinite(v) or v <= 0
+                for v in (self.retrieval.alpha, self.retrieval.beta, self.retrieval.gamma)
+            ):
+                raise ValueError("controlled contrasts require finite positive alpha/beta/gamma")
         if self.data.dataset not in {"medqa", "medmcqa"}:
             raise ValueError("data.dataset must be medqa or medmcqa")
         if self.data.num_clients != 5:
@@ -210,7 +237,7 @@ class Config:
 
     @property
     def hash(self) -> str:
-        return object_hash(asdict(self))
+        return object_hash(self.to_dict())
 
     @property
     def dataset_id(self) -> str:
@@ -225,7 +252,10 @@ class Config:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if self.controls is None:
+            del payload["controls"]
+        return payload
 
 
 def _construct(kind: type[Any], values: Any) -> Any:

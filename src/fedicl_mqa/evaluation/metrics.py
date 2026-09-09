@@ -190,6 +190,12 @@ def _paired_differences(left: Sequence[Prediction], right: Sequence[Prediction])
         raise ValueError("prediction vectors contain duplicate item IDs")
     if left_map.keys() != right_map.keys():
         raise ValueError("paired bootstrap requires identical evaluation item IDs")
+    if any(
+        (left_map[k].gold, left_map[k].client_id, left_map[k].subject)
+        != (right_map[k].gold, right_map[k].client_id, right_map[k].subject)
+        for k in left_map
+    ):
+        raise ValueError("paired items have inconsistent gold labels or client/subject metadata")
     return [
         float(right_map[key].correct) - float(left_map[key].correct) for key in sorted(left_map)
     ]

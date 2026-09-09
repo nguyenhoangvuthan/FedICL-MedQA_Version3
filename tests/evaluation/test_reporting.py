@@ -50,5 +50,42 @@ class ReportingTests(unittest.TestCase):
         self.assertFalse(report["primary"]["client_aware"]["evaluator_dependent"])
 
 
+class ControlledReportingTests(unittest.TestCase):
+    def test_full_controls_produce_separate_prior_diversity_and_matched_contrasts(self):
+        from fedicl_mqa.evaluation.arms import ARMS
+        from fedicl_mqa.evaluation.reporting import CONTROLLED_CONTRASTS
+
+        predictions = {
+            arm: {
+                seed: values(correct=arm in {"F0", "F2", "FD"}, likelihood_correct=True, seed=seed)
+                for seed in ([None] if spec.checkpoint_family == "base" else [42, 43])
+            }
+            for arm, spec in ARMS.items()
+        }
+        report = build_contrast_report(
+            predictions, samples=20, confidence=0.95, bootstrap_seed=1, controlled=True
+        )
+        self.assertEqual(set(report["primary"]), set(CONTROLLED_CONTRASTS))
+        self.assertEqual(report["primary"]["fl_matched"]["left"], "LM0")
+        self.assertEqual(report["primary"]["prior_with_diversity"]["left"], "FD")
+        self.assertEqual(report["primary"]["prior_with_diversity"]["effect"], 0)
+        self.assertEqual(report["primary"]["prior_vs_shuffled"]["left"], "FS")
+        del predictions["FP"][43]
+        with self.assertRaisesRegex(ValueError, "identical training seed"):
+            build_contrast_report(
+                predictions, samples=20, confidence=0.95, bootstrap_seed=1, controlled=True
+            )
+
+    def test_pairing_rejects_changed_gold_labels(self):
+        from dataclasses import replace
+
+        from fedicl_mqa.evaluation.metrics import paired_item_bootstrap
+
+        left = values(correct=True, likelihood_correct=True, seed=42)
+        right = [replace(p, gold=(p.gold + 1) % 4) for p in left]
+        with self.assertRaisesRegex(ValueError, "inconsistent gold"):
+            paired_item_bootstrap(left, right, samples=20)
+
+
 if __name__ == "__main__":
     unittest.main()

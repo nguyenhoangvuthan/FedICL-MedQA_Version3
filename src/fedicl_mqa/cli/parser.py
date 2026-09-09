@@ -62,7 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
         "train", parents=[gpu], help="train Local, Federated or Central LoRA"
     )
     training.add_argument("--config", required=True)
-    training.add_argument("--mode", choices=["local", "federated", "centralized"], required=True)
+    training.add_argument(
+        "--mode", choices=["local", "local-matched", "federated", "centralized"], required=True
+    )
     seed_group = training.add_mutually_exclusive_group(required=True)
     seed_group.add_argument("--seed", type=int)
     seed_group.add_argument("--all-seeds", action="store_true")

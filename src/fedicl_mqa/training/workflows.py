@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from fedicl_mqa.training.checkpointing import CheckpointManager
 from fedicl_mqa.core.config import Config
-from fedicl_mqa.training.federated import FederatedTrainer, adapter_state, set_adapter_state
-from fedicl_mqa.modeling.loader import configure_runtime, load_lora_bundle
 from fedicl_mqa.core.schema import MCQExample
+from fedicl_mqa.modeling.loader import configure_runtime, load_lora_bundle
+from fedicl_mqa.training.checkpointing import CheckpointManager
+from fedicl_mqa.training.federated import FederatedTrainer, adapter_state, set_adapter_state
 from fedicl_mqa.training.loop import train
 
 
@@ -18,7 +18,10 @@ def train_local_clients(
     seed: int,
     output_root: str | Path,
     resume: str | None = "auto",
+    fl_rounds: int | None = None,
 ) -> dict[int, dict[str, float | str]]:
+    if fl_rounds is not None and fl_rounds not in config.training.fl_round_candidates:
+        raise ValueError("matched Local requires a valid selected FL round")
     bundle = load_lora_bundle(config, seed=seed)
     initial_adapter = adapter_state(bundle.model)
     telemetry: dict[int, dict[str, float | str]] = {}
@@ -38,12 +41,16 @@ def train_local_clients(
             client_fit[client_id],
             config,
             seed=local_seed,
-            epochs=config.training.local_epochs,
-            kind=f"local-client-{client_id}",
+            epochs=config.training.local_epochs * (fl_rounds or 1),
+            kind=f"{'local-matched' if fl_rounds else 'local'}-client-{client_id}",
             checkpoint_manager=manager,
             resume=resume,
         )
         telemetry[client_id] = run_metrics
+        if fl_rounds is not None:
+            expected = len(client_fit[client_id]) * config.training.local_epochs * fl_rounds
+            if run_metrics["total_target_exposures"] != expected:
+                raise ValueError("matched Local checkpoint does not have the required exposures")
     return telemetry
 
 

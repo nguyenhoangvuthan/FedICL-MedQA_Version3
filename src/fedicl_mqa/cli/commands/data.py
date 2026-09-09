@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import argparse
 
-from fedicl_mqa.evaluation.audit import audit_retrieval_cohort
+from fedicl_mqa.cli.paths import data_root, seal_config
+from fedicl_mqa.core.io import write_json
+from fedicl_mqa.data.leakage import assert_no_support_leakage
 from fedicl_mqa.data.preparation import (
     build_partition,
     load_native_dataset,
     load_partition,
     materialize_partition,
-    resolve_hub_revision,
 )
-from fedicl_mqa.data.leakage import assert_no_support_leakage
-from fedicl_mqa.cli.paths import data_root, seal_config
+from fedicl_mqa.data.subjects import audit_subjects
+from fedicl_mqa.evaluation.audit import audit_retrieval_cohort
+
 
 def command_prepare_data(args: argparse.Namespace) -> None:
     config = seal_config(args.config)
@@ -27,6 +29,14 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         config.dataset_id,
         revision=config.data.revision,
         limits=limits,
+        **(
+            {
+                "development_fraction": config.controls.medmcqa_validation_fraction,
+                "data_seed": config.experiment.data_seed,
+            }
+            if config.controls is not None
+            else {}
+        ),
     )
     assignments, weights = build_partition(
         splits,
@@ -37,6 +47,29 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         min_support_per_client=config.data.min_support_per_client,
     )
     root = data_root(config)
+    protocol_metadata = None
+    if config.controls is not None:
+        by_id = {q.example_id: q for values in splits.values() for q in values}
+        preview = {
+            c: {r: [] for r in ("fit", "support", "validation", "test")}
+            for c in range(config.data.num_clients)
+        }
+        for assignment in assignments:
+            preview[assignment.client_id][assignment.role].append(by_id[assignment.example_id])
+        subject_audit = audit_subjects(
+            preview, min_validation_per_subject=config.controls.min_validation_per_subject
+        )
+        protocol_metadata = {
+            "name": "controlled",
+            "source_splits": {
+                "fit": "train",
+                "support": "train",
+                "validation": "train holdout",
+                "test": "official validation",
+            },
+            "official_test_used": False,
+            "subject_audit": subject_audit,
+        }
     materialize_partition(
         root,
         splits,
@@ -46,6 +79,7 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         data_seed=config.experiment.data_seed,
         weights=weights,
         config_hash=config.hash,
+        protocol_metadata=protocol_metadata,
     )
     clients = load_partition(root, expected_config_hash=config.hash)
     for values in clients.values():
@@ -53,6 +87,11 @@ def command_prepare_data(args: argparse.Namespace) -> None:
             values["support"],
             [*values["validation"], *values["test"]],
             lexical_threshold=config.retrieval.lexical_jaccard_threshold,
+        )
+    if protocol_metadata is not None:
+        write_json(
+            root / "subject_audit.json",
+            {"config_hash": config.hash, **protocol_metadata["subject_audit"]},
         )
     print(f"Prepared and audited {config.data.dataset} at {root}")
 
@@ -69,4 +108,3 @@ def command_audit_retrieval(args: argparse.Namespace) -> None:
         f"Audited Top-{config.retrieval.top_k} capacity for {result['query_count']} queries; "
         f"manifest: {output}"
     )
-

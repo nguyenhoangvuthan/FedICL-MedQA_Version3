@@ -90,12 +90,30 @@ def load_native_dataset(
     *,
     revision: str,
     limits: Mapping[str, int | None] | None = None,
+    development_fraction: float | None = None,
+    data_seed: int = 0,
 ) -> dict[str, list[MCQExample]]:
     try:
         from datasets import load_dataset
     except ImportError as exc:  # pragma: no cover - exercised only in full environment
         raise RuntimeError("datasets is required; install the project dependencies") from exc
 
+    if development_fraction is not None:
+        if dataset_name != "medmcqa":
+            raise ValueError("native development holdout is implemented for MedMCQA only")
+        from fedicl_mqa.data.subjects import development_split
+
+        source = {
+            split: load_dataset(dataset_id, revision=revision, split=split, trust_remote_code=False)
+            for split in ("train", "validation")
+        }
+        return development_split(
+            [adapt_medmcqa(row, "train") for row in source["train"]],
+            [adapt_medmcqa(row, "validation") for row in source["validation"]],
+            fraction=development_fraction,
+            seed=data_seed,
+            limits=limits or {},
+        )
     raw = load_dataset(dataset_id, revision=revision, trust_remote_code=False)
     adapter = {"medqa": adapt_medqa, "medmcqa": adapt_medmcqa}.get(dataset_name.casefold())
     if adapter is None:
@@ -234,6 +252,7 @@ def materialize_partition(
     data_seed: int,
     weights: Mapping[str, Sequence[float]],
     config_hash: str,
+    protocol_metadata: Mapping[str, Any] | None = None,
 ) -> None:
     root = Path(root)
     by_id = {example.example_id: example for values in splits.values() for example in values}
@@ -254,6 +273,7 @@ def materialize_partition(
             "counts": dict(Counter(assignment.role for assignment in assignments)),
             "subject_client_weights": {key: list(value) for key, value in weights.items()},
             "assignments": assignment_payload,
+            **({"protocol": dict(protocol_metadata)} if protocol_metadata is not None else {}),
         },
     )
     hashes = {

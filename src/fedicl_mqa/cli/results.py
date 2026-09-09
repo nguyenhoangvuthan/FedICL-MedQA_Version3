@@ -16,7 +16,7 @@ from typing import Any
 from fedicl_mqa.cli import paths
 from fedicl_mqa.core.config import Config
 from fedicl_mqa.core.io import read_json, write_json
-from fedicl_mqa.evaluation.arms import ARMS
+from fedicl_mqa.evaluation.arms import active_arms
 
 # Reported for every arm. pipeline_accuracy is the primary endpoint; the rest are the
 # secondary metrics that distinguish arms scoring alike on it.
@@ -96,16 +96,14 @@ def update_comparison(config: Config, *, split: str) -> dict[str, Any]:
     what is on disk.
     """
     arms: dict[str, Any] = {}
-    for arm in sorted(ARMS):
+    for arm in active_arms(config):
         summaries = _summaries_for(config, arm, split)
         if not summaries:
             continue
         mean: dict[str, float] = {}
         spread: dict[str, float] = {}
         for metric in COMPARISON_METRICS:
-            values = [
-                float(summary[metric]) for summary in summaries.values() if metric in summary
-            ]
+            values = [float(summary[metric]) for summary in summaries.values() if metric in summary]
             if not values:
                 continue
             mean[metric] = statistics.fmean(values)
@@ -154,9 +152,7 @@ def render_comparison(table: dict[str, Any]) -> str:
                 continue
             value = entry["mean"][metric]
             deviation = entry["std"].get(metric, 0.0)
-            cells.append(
-                f"{value:.4f}" if entry["runs"] == 1 else f"{value:.4f} ± {deviation:.4f}"
-            )
+            cells.append(f"{value:.4f}" if entry["runs"] == 1 else f"{value:.4f} ± {deviation:.4f}")
         lines.append("| " + " | ".join(cells) + " |")
     if not ranked:
         lines.append("| (no arm evaluated yet) |" + " |" * len(COMPARISON_METRICS))

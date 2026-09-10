@@ -5,14 +5,16 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from fedicl_mqa.core.io import file_sha256, read_json, write_json
+from fedicl_mqa.core.schema import MCQExample
 from fedicl_mqa.data.preparation import (
+    _verify_partition_files,
     adapt_medmcqa,
     adapt_medqa,
     build_partition,
     load_partition,
     materialize_partition,
 )
-from fedicl_mqa.core.schema import MCQExample, label_to_index, normalize_text
 
 
 def example(index: int, split: str, subject: str = "medicine") -> MCQExample:
@@ -122,6 +124,74 @@ class PartitionTests(unittest.TestCase):
             target.write_text(target.read_text(encoding="utf-8") + "{}\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "hash mismatch"):
                 load_partition(root, expected_config_hash="config")
+
+
+class PortableManifestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.fit = self.root / "client_0" / "fit.jsonl"
+        self.fit.parent.mkdir()
+        self.fit.write_text("{}\n", encoding="utf-8")
+        write_json(self.root / "partition_manifest.json", {"config_hash": "unchanged"})
+        self.hashes_path = self.root / "file_hashes.json"
+
+    def write_hashes(self, key: str) -> None:
+        write_json(
+            self.hashes_path,
+            {
+                "partition_manifest.json": file_sha256(self.root / "partition_manifest.json"),
+                key: file_sha256(self.fit),
+            },
+        )
+
+    def test_both_separator_styles_verify_without_rewriting_any_artifact(self) -> None:
+        for key in ("client_0/fit.jsonl", "client_0\\fit.jsonl"):
+            with self.subTest(key=key):
+                self.write_hashes(key)
+                before = {p: p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+                _verify_partition_files(self.root)
+                self.assertEqual(before, {p: p.read_bytes() for p in before})
+
+    def test_windows_manifest_still_detects_content_tampering(self) -> None:
+        self.write_hashes("client_0\\fit.jsonl")
+        self.fit.write_text('{"tampered": true}\n', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "hash mismatch"):
+            _verify_partition_files(self.root)
+
+    def test_aliases_cannot_hide_duplicate_manifest_entries(self) -> None:
+        self.write_hashes("client_0/fit.jsonl")
+        hashes = read_json(self.hashes_path)
+        hashes["client_0\\fit.jsonl"] = hashes["client_0/fit.jsonl"]
+        write_json(self.hashes_path, hashes)
+        with self.assertRaisesRegex(ValueError, "duplicate normalized"):
+            _verify_partition_files(self.root)
+
+    def test_path_escape_is_rejected_in_both_styles(self) -> None:
+        for key in (
+            "../fit.jsonl",
+            "..\\fit.jsonl",
+            "/tmp/fit.jsonl",
+            "C:\\data\\fit.jsonl",
+            "C:fit.jsonl",
+            "\\\\server\\share\\fit.jsonl",
+        ):
+            with self.subTest(key=key):
+                self.write_hashes(key)
+                with self.assertRaisesRegex(ValueError, "escapes root"):
+                    _verify_partition_files(self.root)
+
+    def test_missing_or_unlisted_files_still_fail(self) -> None:
+        self.write_hashes("client_0\\fit.jsonl")
+        extra = self.fit.with_name("test.jsonl")
+        extra.write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "manifest does not match"):
+            _verify_partition_files(self.root)
+        extra.unlink()
+        self.fit.unlink()
+        with self.assertRaisesRegex(ValueError, "manifest does not match"):
+            _verify_partition_files(self.root)
 
 
 if __name__ == "__main__":

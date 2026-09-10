@@ -4,10 +4,21 @@ import json
 import os
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 from fedicl_mqa.training.checkpointing import CheckpointManager, TrainerState
+
+
+@contextmanager
+def _working_directory(path: str | Path):
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
 
 class _FakeCuda:
@@ -113,24 +124,15 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(manager.resolve("last"), second)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RelativeRootTests(unittest.TestCase):
     """output_dir in the shipped configs is relative, so root often is too."""
 
     def _manager(self, root: str | Path) -> CheckpointManager:
-        return CheckpointManager(
-            root, config_hash="config", model_id="model", model_revision="sha"
-        )
+        return CheckpointManager(root, config_hash="config", model_id="model", model_revision="sha")
 
     def test_resolve_accepts_what_latest_returns(self) -> None:
         """latest() hands load() a rooted path; resolve() must not root it a second time."""
-        with tempfile.TemporaryDirectory() as temporary:
-            previous = Path.cwd()
-            os.chdir(temporary)
-            self.addCleanup(os.chdir, previous)
+        with tempfile.TemporaryDirectory() as temporary, _working_directory(temporary):
             manager = self._manager(Path("outputs") / "a5000" / "local" / "client-0")
             checkpoint = manager.root / "checkpoint-epoch-0001-step-00000235"
             checkpoint.mkdir(parents=True)
@@ -144,20 +146,43 @@ class RelativeRootTests(unittest.TestCase):
             self.assertEqual(manager.resolve("checkpoint-0001"), checkpoint.resolve())
 
     def test_root_is_absolute_so_paths_cannot_depend_on_the_working_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            previous = Path.cwd()
-            os.chdir(temporary)
-            self.addCleanup(os.chdir, previous)
+        with tempfile.TemporaryDirectory() as temporary, _working_directory(temporary):
             self.assertTrue(self._manager("outputs/a5000/local").root.is_absolute())
+
+
+class WorkingDirectoryCleanupTests(unittest.TestCase):
+    def test_relative_root_tests_leave_directory_before_removal(self) -> None:
+        """Enforce the Windows directory-lock constraint on every test platform."""
+        original = tempfile.TemporaryDirectory
+
+        class CheckedTemporaryDirectory(original):
+            def __exit__(self, *args):
+                root = Path(self.name).resolve()
+                cwd = Path.cwd().resolve()
+                if cwd == root or root in cwd.parents:
+                    raise AssertionError("temporary directory is still the current directory")
+                return super().__exit__(*args)
+
+        suite = unittest.defaultTestLoader.loadTestsFromTestCase(RelativeRootTests)
+        result = unittest.TestResult()
+        with patch.object(tempfile, "TemporaryDirectory", CheckedTemporaryDirectory):
+            suite.run(result)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+
+    def test_working_directory_is_restored_after_an_exception(self) -> None:
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(RuntimeError, "test failure"):
+                with _working_directory(temporary):
+                    raise RuntimeError("test failure")
+            self.assertEqual(Path.cwd(), previous)
 
 
 class MissingCheckpointMessageTests(unittest.TestCase):
     """A missing checkpoint printed only its path, which explained nothing."""
 
     def _manager(self, root: str | Path) -> CheckpointManager:
-        return CheckpointManager(
-            root, config_hash="config", model_id="model", model_revision="sha"
-        )
+        return CheckpointManager(root, config_hash="config", model_id="model", model_revision="sha")
 
     def test_message_names_the_path_and_the_stale_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -176,3 +201,7 @@ class MissingCheckpointMessageTests(unittest.TestCase):
             outside.mkdir()
             with self.assertRaises(ValueError):
                 manager.resolve(outside)
+
+
+if __name__ == "__main__":
+    unittest.main()

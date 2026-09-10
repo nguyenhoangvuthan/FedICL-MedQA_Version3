@@ -5,7 +5,7 @@ import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from fedicl_mqa.core.io import file_sha256, write_examples, write_json
@@ -277,7 +277,7 @@ def materialize_partition(
         },
     )
     hashes = {
-        str(path.relative_to(root)): file_sha256(path)
+        path.relative_to(root).as_posix(): file_sha256(path)
         for path in [root / "partition_manifest.json", *sorted(root.glob("client_*/*.jsonl"))]
     }
     write_json(root / "file_hashes.json", hashes)
@@ -314,9 +314,24 @@ def _read_manifest(root: Path) -> dict[str, Any]:
 def _verify_partition_files(root: Path) -> None:
     from fedicl_mqa.core.io import read_json
 
-    expected = read_json(root / "file_hashes.json")
+    # Historical Windows manifests use backslashes; POSIX manifests use slashes.
+    # Normalize keys only in memory so existing manifests and their hashes stay intact.
+    expected: dict[str, str] = {}
+    for relative, digest in read_json(root / "file_hashes.json").items():
+        portable = PurePosixPath(relative.replace("\\", "/"))
+        if (
+            PureWindowsPath(relative).drive
+            or portable.is_absolute()
+            or ".." in portable.parts
+            or not portable.parts
+        ):
+            raise ValueError(f"partition manifest path escapes root: {relative}")
+        normalized = portable.as_posix()
+        if normalized in expected:
+            raise ValueError(f"duplicate normalized partition manifest path: {relative}")
+        expected[normalized] = digest
     actual_files = {
-        str(path.relative_to(root))
+        path.relative_to(root).as_posix()
         for path in [root / "partition_manifest.json", *root.glob("client_*/*.jsonl")]
         if path.is_file()
     }

@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 
 from fedicl_mqa.cli.paths import data_root, seal_config
-from fedicl_mqa.core.io import write_json
+from fedicl_mqa.core.io import read_json, write_json
+from fedicl_mqa.data.decontamination import assert_disjoint_splits, decontaminate_splits
 from fedicl_mqa.data.leakage import assert_no_support_leakage
 from fedicl_mqa.data.preparation import (
     build_partition,
@@ -19,6 +20,14 @@ from fedicl_mqa.evaluation.audit import audit_retrieval_cohort
 
 def command_prepare_data(args: argparse.Namespace) -> None:
     config = seal_config(args.config)
+    root = data_root(config)
+    if config.controls is not None and (root / "subject_audit.json").exists():
+        prior_audit = read_json(root / "subject_audit.json")
+        if "decontamination" not in prior_audit:
+            raise ValueError(
+                "existing controlled partition predates global decontamination; "
+                "use a new output_dir to preserve prior training and evaluation artifacts"
+            )
     limits = {
         "train": config.data.max_train_samples,
         "validation": config.data.max_validation_samples,
@@ -40,6 +49,21 @@ def command_prepare_data(args: argparse.Namespace) -> None:
             else {}
         ),
     )
+    decontamination_audit = None
+    if config.controls is not None:
+        print(
+            "Checking global train/validation/test overlap before client assignment...", flush=True
+        )
+        splits, decontamination_audit = decontaminate_splits(
+            splits,
+            lexical_threshold=config.retrieval.lexical_jaccard_threshold,
+        )
+        print(
+            f"Decontamination: {decontamination_audit['input_counts']} -> "
+            f"{decontamination_audit['retained_counts']}",
+            flush=True,
+        )
+        assert_disjoint_splits(splits, lexical_threshold=config.retrieval.lexical_jaccard_threshold)
     assignments, weights = build_partition(
         splits,
         num_clients=config.data.num_clients,
@@ -48,7 +72,6 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         seed=config.experiment.data_seed,
         min_support_per_client=config.data.min_support_per_client,
     )
-    root = data_root(config)
     protocol_metadata = None
     if config.controls is not None:
         by_id = {q.example_id: q for values in splits.values() for q in values}
@@ -62,6 +85,7 @@ def command_prepare_data(args: argparse.Namespace) -> None:
             preview, min_validation_per_subject=config.controls.min_validation_per_subject
         )
         subject_audit["source_subject_filter"] = subject_filter_audit
+        subject_audit["decontamination"] = decontamination_audit
         for split, counts in subject_filter_audit["source_splits"].items():
             print(
                 f"Native subjects ({split}): retained {counts['retained_count']}/"

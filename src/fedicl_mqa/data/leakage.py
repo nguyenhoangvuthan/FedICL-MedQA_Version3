@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
 from fedicl_mqa.core.schema import MCQExample
@@ -21,6 +21,77 @@ def token_jaccard(left: str, right: str) -> float:
     right_tokens = set(right.split())
     union = left_tokens | right_tokens
     return len(left_tokens & right_tokens) / len(union) if union else 1.0
+
+
+class LeakageIndex:
+    """Exact metadata checks and a lossless candidate index for token Jaccard.
+
+    A match at threshold t shares at least ceil(t * len(query)) query tokens.
+    Thus it must share one of any len(query) - ceil(t * len(query)) + 1 tokens.
+    Query the rarest such prefix to avoid scanning common-word postings, then
+    compute the exact score. No approximate search or answer labels are used.
+    """
+
+    def __init__(
+        self,
+        examples: Sequence[MCQExample],
+        *,
+        lexical_threshold: float = 0.85,
+        check_provenance: bool = True,
+    ) -> None:
+        if not 0 < lexical_threshold <= 1:
+            raise ValueError("lexical threshold must be in (0, 1]")
+        self.examples = sorted(examples, key=lambda q: q.example_id)
+        self.threshold = lexical_threshold
+        self.check_provenance = check_provenance
+        self.exact: dict[str, dict[str, list[int]]] = {
+            kind: defaultdict(list)
+            for kind in ("id", "normalized_question", "question_options_hash", "provenance_group")
+        }
+        self.tokens: list[frozenset[str]] = []
+        self.postings: dict[str, list[int]] = defaultdict(list)
+        for index, q in enumerate(self.examples):
+            for kind, value in self._keys(q):
+                self.exact[kind][value].append(index)
+            tokens = frozenset(q.normalized_question.split())
+            self.tokens.append(tokens)
+            for token in tokens:
+                self.postings[token].append(index)
+
+    def _keys(self, q: MCQExample) -> Iterator[tuple[str, str]]:
+        yield "id", q.example_id
+        yield "normalized_question", q.normalized_question
+        yield "question_options_hash", q.question_options_hash
+        if self.check_provenance and q.provenance_group:
+            yield "provenance_group", q.provenance_group
+
+    def matches(self, query: MCQExample) -> Iterator[LeakageIssue]:
+        for kind, value in self._keys(query):
+            for index in self.exact[kind].get(value, ()):
+                yield LeakageIssue(kind, self.examples[index].example_id, query.example_id, value)
+        normalized = query.normalized_question
+        tokens = frozenset(normalized.split())
+        # floor instead of ceil is deliberately conservative at float boundaries.
+        prefix_length = min(len(tokens), len(tokens) - math.floor(self.threshold * len(tokens)) + 1)
+        prefix = sorted(tokens, key=lambda t: (len(self.postings.get(t, ())), t))[:prefix_length]
+        candidates: set[int] = set()
+        for token in prefix:
+            candidates.update(self.postings.get(token, ()))
+        for index in sorted(candidates):
+            other = self.tokens[index]
+            if min(len(tokens), len(other)) / max(len(tokens), len(other)) < self.threshold:
+                continue
+            similarity = len(tokens & other) / len(tokens | other)
+            if (
+                similarity >= self.threshold
+                and self.examples[index].normalized_question != normalized
+            ):
+                yield LeakageIssue(
+                    "lexical_near_duplicate",
+                    self.examples[index].example_id,
+                    query.example_id,
+                    f"{similarity:.6f}",
+                )
 
 
 def audit_support_leakage(

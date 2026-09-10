@@ -30,14 +30,6 @@ is also embedded in the hashed partition manifest. Legacy runs without `controls
 retain their previous behavior. Report results as applying to the cohort with
 usable native subjects, not the entire original validation set.
 
-CPU verification on source revision `91c6572c454088bf71b679ad90aa8dffcd0d5868`
-with the shipped controls config retained 179,777 original train and 4,181 original
-validation questions across 20 subjects. After holdout, the counts were 161,800
-train (fit + support), 17,977 internal validation, and 4,181 final test. The
-five-client subject audit passed, with a minimum of 27 other-client validation
-examples per required subject (threshold 10). This checks subject eligibility,
-splitting and prior coverage; it is not a full pipeline or GPU validation.
-
 The controlled loader explicitly requests only the source `train` and `validation`
 splits. It does not consume official test, whose public labels may be masked.
 It creates the following fixed roles, with no question ID overlap:
@@ -53,6 +45,46 @@ client partitioning. It does not inspect answer labels or model outputs. Optiona
 sample limits apply **after** this split and a deterministic shuffle. A test limit
 therefore refers to the official validation source. This is a development-set
 benchmark, not an evaluation on the official test set; report that explicitly.
+
+Different IDs can contain identical or near-identical questions. Controlled
+preparation therefore applies `global_cross_split_exclusion_v1` after holdout and
+sample limits, before client assignment and fit/support allocation:
+
+1. Keep the selected final test questions fixed.
+2. Remove internal validation questions overlapping final test.
+3. Remove training questions overlapping final test or the retained validation.
+
+Overlap uses the existing audit criteria: ID, normalized question,
+question/options hash, provenance group, or question-token Jaccard at the configured
+threshold (0.85 by default). All future clients participate in this global check;
+both fit and support are protected. Correct answers, model predictions and test
+accuracy are not used. A lossless rare-token candidate index is followed by exact
+Jaccard scoring; the leakage threshold is not relaxed. Duplicates **within** a
+split remain, so this is cross-split decontamination, not full deduplication.
+
+The `decontamination` entry in `subject_audit.json` and the hashed partition
+manifest records the policy, threshold, before/after counts, and every removed ID
+with a matching protected ID and reason. One witness is recorded per excluded
+question, so these counts are not counts of all duplicate pairs. Sample limits
+are upper bounds: decontamination can reduce the retained train/validation sizes.
+Subject coverage and global disjointness are checked after filtering; the original
+per-client support leakage audit still runs after materialization.
+
+CPU verification on source revision `91c6572c454088bf71b679ad90aa8dffcd0d5868`
+with the shipped controls config completed the entire `prepare-data` command from
+the source Parquet files, including artifact hashes, subject coverage and all five
+per-client leakage audits. The source transport was local Parquet in place of the
+Hub loader; no GPU training or retrieval encoder was run.
+
+| Role | Before decontamination | Removed | Retained |
+| --- | ---: | ---: | ---: |
+| Train (fit + support) | 161,800 | 9,490 | 152,310 |
+| Internal validation | 17,977 | 5 | 17,972 |
+| Final test | 4,181 | 0 | 4,181 |
+
+The retained cohort has 20 subjects. Minimum other-client validation coverage is
+31 questions per required subject (threshold 10). These are data preparation
+checks, not model accuracy results.
 
 Preparation freezes Hub revisions, records the source-role mapping in the hashed
 partition manifest, and writes `data/medmcqa/subject_audit.json`. It rejects any
@@ -156,6 +188,14 @@ round selection, priors, Centralized, matched Local, the 13-arm evaluation, and 
 Base arms run once; the other eleven arms run for all three seeds: 35 test evaluations.
 Subject checks happen before training. Prior variation is checked after F0 validation;
 no GPU training has been performed as part of this code change.
+
+After a failure in `prepare-data`, rerun the same pipeline command with the fixed
+code. The controlled completion marker (`subject_audit.json`) is written only
+after the audits pass, so a failed attempt is retried and partial partition files
+are rebuilt. Do not delete the sealed config, CUDA environment, or old MedQA
+outputs. If a controlled partition already completed under an older preparation
+policy, use a fresh `output_dir` for the new policy; explicit preparation refuses
+to replace that completed partition and silently reuse its trained checkpoints.
 
 To run only matched Local after round selection, then evaluate its paired arms:
 

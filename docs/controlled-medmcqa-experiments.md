@@ -18,6 +18,26 @@ The dataset card's machine-readable schema encodes `cop` as zero-based A/B/C/D;
 its prose example uses a different convention. The existing adapter follows the schema.
 No subjects are fabricated by clustering, keyword rules, answers or test performance.
 
+The source also contains the placeholder `Unknown` (3,045 train and 2 validation
+rows in the public Dataset Viewer checked on 2026-09-10). Controlled preparation
+excludes missing/placeholder native subjects **before** holdout, sample limits,
+and client assignment. The fixed metadata-only exclusion policy also covers blank,
+`general`, `n/a`, and `none` values, ignoring case and surrounding whitespace.
+It never relabels these questions or uses answers/predictions to choose exclusions.
+`source_subject_filter` in the subject audit records input/retained/excluded counts,
+excluded labels, and all excluded IDs for each original source split. This audit
+is also embedded in the hashed partition manifest. Legacy runs without `controls`
+retain their previous behavior. Report results as applying to the cohort with
+usable native subjects, not the entire original validation set.
+
+CPU verification on source revision `91c6572c454088bf71b679ad90aa8dffcd0d5868`
+with the shipped controls config retained 179,777 original train and 4,181 original
+validation questions across 20 subjects. After holdout, the counts were 161,800
+train (fit + support), 17,977 internal validation, and 4,181 final test. The
+five-client subject audit passed, with a minimum of 27 other-client validation
+examples per required subject (threshold 10). This checks subject eligibility,
+splitting and prior coverage; it is not a full pipeline or GPU validation.
+
 The controlled loader explicitly requests only the source `train` and `validation`
 splits. It does not consume official test, whose public labels may be masked.
 It creates the following fixed roles, with no question ID overlap:
@@ -35,8 +55,8 @@ therefore refers to the official validation source. This is a development-set
 benchmark, not an evaluation on the official test set; report that explicitly.
 
 Preparation freezes Hub revisions, records the source-role mapping in the hashed
-partition manifest, and writes `data/medmcqa/subject_audit.json`. It rejects missing
-subject metadata, fewer than two support subjects in a client, identical client
+partition manifest, and writes `data/medmcqa/subject_audit.json`. It rejects any
+remaining missing subject metadata, fewer than two support subjects in a client, identical client
 fit-subject distributions, or fewer than 10 other-client validation questions for
 any subject used in a client's support. The audit records per-client/role counts
 and maximum pairwise total-variation distance between fit-subject distributions.

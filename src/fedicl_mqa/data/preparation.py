@@ -92,6 +92,7 @@ def load_native_dataset(
     limits: Mapping[str, int | None] | None = None,
     development_fraction: float | None = None,
     data_seed: int = 0,
+    subject_filter_audit: dict[str, Any] | None = None,
 ) -> dict[str, list[MCQExample]]:
     try:
         from datasets import load_dataset
@@ -101,15 +102,20 @@ def load_native_dataset(
     if development_fraction is not None:
         if dataset_name != "medmcqa":
             raise ValueError("native development holdout is implemented for MedMCQA only")
-        from fedicl_mqa.data.subjects import development_split
+        from fedicl_mqa.data.subjects import development_split, filter_native_subjects
 
         source = {
             split: load_dataset(dataset_id, revision=revision, split=split, trust_remote_code=False)
             for split in ("train", "validation")
         }
+        filtered, audit = filter_native_subjects(
+            {split: [adapt_medmcqa(row, split) for row in rows] for split, rows in source.items()}
+        )
+        if subject_filter_audit is not None:
+            subject_filter_audit.update(audit)
         return development_split(
-            [adapt_medmcqa(row, "train") for row in source["train"]],
-            [adapt_medmcqa(row, "validation") for row in source["validation"]],
+            filtered["train"],
+            filtered["validation"],
             fraction=development_fraction,
             seed=data_seed,
             limits=limits or {},

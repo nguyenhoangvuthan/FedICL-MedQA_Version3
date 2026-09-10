@@ -10,6 +10,33 @@ from typing import Any
 
 from fedicl_mqa.core.schema import MCQExample
 
+MISSING_SUBJECTS = frozenset({"", "unknown", "general", "n/a", "none"})
+
+
+def filter_native_subjects(
+    sources: Mapping[str, Sequence[MCQExample]],
+) -> tuple[dict[str, list[MCQExample]], dict[str, Any]]:
+    """Exclude missing native labels before splitting, using metadata only."""
+    retained = {}
+    audit: dict[str, Any] = {
+        "policy": "exclude_missing_native_subjects_v1",
+        "missing_subject_values": sorted(MISSING_SUBJECTS),
+        "source_splits": {},
+    }
+    for split, items in sources.items():
+        excluded = [q for q in items if q.subject.strip().casefold() in MISSING_SUBJECTS]
+        retained[split] = [q for q in items if q.subject.strip().casefold() not in MISSING_SUBJECTS]
+        audit["source_splits"][split] = {
+            "input_count": len(items),
+            "retained_count": len(retained[split]),
+            "excluded_count": len(excluded),
+            "excluded_subject_counts": dict(sorted(Counter(q.subject for q in excluded).items())),
+            "excluded_ids": sorted(q.example_id for q in excluded),
+        }
+        if not retained[split]:
+            raise ValueError(f"source {split} has no examples with usable native subject labels")
+    return retained, audit
+
 
 def development_split(
     train: Sequence[MCQExample],
@@ -68,10 +95,13 @@ def audit_subjects(
             histogram = Counter(q.subject for q in roles[role])
             if not histogram:
                 raise ValueError(f"client {client} has no {role} data")
-            if any(
-                s.strip().casefold() in {"", "unknown", "general", "n/a", "none"} for s in histogram
-            ):
-                raise ValueError(f"client {client}/{role} has missing native subject labels")
+            missing = {
+                s: n for s, n in histogram.items() if s.strip().casefold() in MISSING_SUBJECTS
+            }
+            if missing:
+                raise ValueError(
+                    f"client {client}/{role} has missing native subject labels: {missing}"
+                )
             counts[client][role] = dict(sorted(histogram.items()))
         if len(counts[client]["support"]) < 2:
             raise ValueError(f"client {client} needs at least two subjects in its support pool")

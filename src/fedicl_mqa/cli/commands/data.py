@@ -24,6 +24,7 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         "validation": config.data.max_validation_samples,
         "test": config.data.max_test_samples,
     }
+    subject_filter_audit = {}
     splits = load_native_dataset(
         config.data.dataset,
         config.dataset_id,
@@ -33,6 +34,7 @@ def command_prepare_data(args: argparse.Namespace) -> None:
             {
                 "development_fraction": config.controls.medmcqa_validation_fraction,
                 "data_seed": config.experiment.data_seed,
+                "subject_filter_audit": subject_filter_audit,
             }
             if config.controls is not None
             else {}
@@ -59,6 +61,14 @@ def command_prepare_data(args: argparse.Namespace) -> None:
         subject_audit = audit_subjects(
             preview, min_validation_per_subject=config.controls.min_validation_per_subject
         )
+        subject_audit["source_subject_filter"] = subject_filter_audit
+        for split, counts in subject_filter_audit["source_splits"].items():
+            print(
+                f"Native subjects ({split}): retained {counts['retained_count']}/"
+                f"{counts['input_count']}; excluded {counts['excluded_count']} "
+                f"missing labels {counts['excluded_subject_counts']}",
+                flush=True,
+            )
         protocol_metadata = {
             "name": "controlled",
             "source_splits": {

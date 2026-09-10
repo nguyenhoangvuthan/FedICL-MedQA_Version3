@@ -35,6 +35,7 @@ from fedicl_mqa.cli.commands import training as training_commands
 from fedicl_mqa.core.config import Config
 from fedicl_mqa.core.io import atomic_write_text, read_json
 from fedicl_mqa.evaluation.arms import active_arms
+from fedicl_mqa.training.context import load_plan, plan_path
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +235,17 @@ def build_steps(
         ),
         # Training resumes internally from its own checkpoints, so these always run and
         # return quickly when there is nothing left to do.
+        *(
+            [
+                Step(
+                    "audit-training-icl",
+                    lambda: data_commands.command_audit_training_icl(_namespace(sealed)),
+                    done(lambda: bool(load_plan(config)) if plan_path(config).exists() else False),
+                )
+            ]
+            if config.icl_training is not None
+            else []
+        ),
         Step("train-local", train("local"), lambda: False),
         Step("train-federated", train("federated"), lambda: False),
         Step("evaluate-f0-validation", evaluate_f0_validation, done(f0_validation_complete)),
@@ -252,6 +264,14 @@ def build_steps(
             else []
         ),
         Step("train-centralized", train("centralized"), lambda: False),
+        *(
+            [
+                Step("train-local-icl", train("local-icl"), lambda: False),
+                Step("train-federated-icl", train("federated-icl"), lambda: False),
+            ]
+            if config.icl_training is not None
+            else []
+        ),
         *(
             [Step("train-local-matched", train("local-matched"), lambda: False)]
             if config.controls is not None

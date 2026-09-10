@@ -4,10 +4,11 @@ import logging
 import math
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fedicl_mqa.core.config import Config
+from fedicl_mqa.core.io import object_hash
 from fedicl_mqa.core.schema import MCQExample
 from fedicl_mqa.modeling.loader import ModelBundle, chat_prefix, gpu_telemetry
 from fedicl_mqa.modeling.prompting import build_prompt, training_completion
@@ -15,17 +16,34 @@ from fedicl_mqa.training.checkpointing import CheckpointManager, TrainerState
 
 
 class AnswerOnlyDataset:
-    def __init__(self, examples: Sequence[MCQExample], tokenizer: Any, max_length: int) -> None:
+    def __init__(
+        self,
+        examples: Sequence[MCQExample],
+        tokenizer: Any,
+        max_length: int,
+        exemplars: Mapping[str, Sequence[MCQExample]] | None = None,
+    ) -> None:
         self.examples = list(examples)
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.exemplars = exemplars
+        if exemplars is not None:
+            if set(exemplars) != {q.example_id for q in examples}:
+                raise ValueError("training exemplar plan must cover exactly the fit cohort")
+            for q in examples:
+                demos = exemplars[q.example_id]
+                if len(demos) != 5 or len({d.example_id for d in demos}) != 5:
+                    raise ValueError("training requires five distinct exemplars per target")
+                if any(d.split != "train" or d.example_id == q.example_id for d in demos):
+                    raise ValueError("training exemplars must be train-only and exclude the target")
 
     def __len__(self) -> int:
         return len(self.examples)
 
     def __getitem__(self, index: int) -> dict[str, list[int]]:
         example = self.examples[index]
-        prompt_ids = chat_prefix(self.tokenizer, build_prompt(example), tokenize=True)
+        demos = () if self.exemplars is None else self.exemplars[example.example_id]
+        prompt_ids = chat_prefix(self.tokenizer, build_prompt(example, demos), tokenize=True)
         completion_ids = self.tokenizer(training_completion(example), add_special_tokens=False)[
             "input_ids"
         ]
@@ -112,6 +130,7 @@ def train(
     checkpoint_manager: CheckpointManager | None = None,
     resume: str | None = None,
     initial_state: TrainerState | None = None,
+    exemplars: Mapping[str, Sequence[MCQExample]] | None = None,
 ) -> tuple[TrainerState, dict[str, float | str]]:
     import torch
     from torch.utils.data import DataLoader
@@ -120,7 +139,15 @@ def train(
         raise ValueError("training data cannot be empty")
     model, tokenizer = bundle.model, bundle.tokenizer
     tokenizer.padding_side = "right"
-    dataset = AnswerOnlyDataset(examples, tokenizer, config.model.max_seq_length)
+    dataset = AnswerOnlyDataset(examples, tokenizer, config.model.max_seq_length, exemplars)
+    context_hash = (
+        object_hash(
+            {q.example_id: [e.example_id for e in exemplars[q.example_id]] for q in examples}
+        )
+        if exemplars is not None
+        else None
+    )
+    context_extra = {"training_context_sha256": context_hash} if context_hash else {}
     optimizer = create_optimizer(model, config)
     state = initial_state or TrainerState(kind=kind, seed=seed)
     if checkpoint_manager and resume:
@@ -132,6 +159,8 @@ def train(
                 latest, model=model, optimizer=optimizer, restore_rng=True
             )
             state = loaded.trainer_state
+            if loaded.extra.get("training_context_sha256") != context_hash:
+                raise ValueError("resume checkpoint has a different training exemplar context")
             logger.info(
                 "%s: resumed %s (step %d, epoch %d, batch %d)",
                 kind,
@@ -259,7 +288,7 @@ def train(
                         model=model,
                         optimizer=optimizer,
                         trainer_state=state,
-                        extra={"last_loss": loss_value},
+                        extra={"last_loss": loss_value, **context_extra},
                     )
         state.epoch = epoch + 1
         state.batch_in_epoch = 0
@@ -279,6 +308,7 @@ def train(
                 model=model,
                 optimizer=optimizer,
                 trainer_state=state,
+                extra=context_extra,
             )
             logger.info("%s: saved %s", kind, name)
 
@@ -304,6 +334,7 @@ def train(
         "effective_batch_size": float(
             config.training.train_micro_batch_size * config.training.gradient_accumulation_steps
         ),
+        "training_exemplars_per_target": 5 if exemplars is not None else 0,
         **gpu_telemetry(),
     }
     return state, telemetry

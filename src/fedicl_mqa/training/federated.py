@@ -7,11 +7,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from fedicl_mqa.training.checkpointing import CheckpointManager, TrainerState
 from fedicl_mqa.core.config import Config
-from fedicl_mqa.core.io import file_sha256, read_json, write_json
-from fedicl_mqa.modeling.loader import ModelBundle, configure_runtime
+from fedicl_mqa.core.io import file_sha256, object_hash, read_json, write_json
 from fedicl_mqa.core.schema import MCQExample
+from fedicl_mqa.modeling.loader import ModelBundle, configure_runtime
+from fedicl_mqa.training.checkpointing import CheckpointManager, TrainerState
 from fedicl_mqa.training.loop import train
 
 
@@ -132,13 +132,36 @@ class FederatedTrainer:
         rounds: int,
         resume: str | None = "auto",
         validation_callback: ValidationCallback | None = None,
+        client_exemplars: Mapping[int, Mapping[str, Sequence[MCQExample]]] | None = None,
     ) -> tuple[TrainerState, list[dict[str, Any]]]:
         if set(client_fit) != set(range(self.config.data.num_clients)):
             raise ValueError("full participation requires fit data for every client")
         if any(not values for values in client_fit.values()):
             raise ValueError("every client must have non-empty fit data")
+        if client_exemplars is not None:
+            if set(client_exemplars) != set(client_fit) or any(
+                set(client_exemplars[c]) != {q.example_id for q in qs}
+                for c, qs in client_fit.items()
+            ):
+                raise ValueError("federated exemplar plans must cover every client's fit cohort")
+        context_hash = (
+            object_hash(
+                {
+                    str(c): {
+                        q.example_id: [e.example_id for e in client_exemplars[c][q.example_id]]
+                        for q in qs
+                    }
+                    for c, qs in client_fit.items()
+                }
+            )
+            if client_exemplars is not None
+            else None
+        )
+        context_extra = {"training_context_sha256": context_hash} if context_hash else {}
 
-        state = TrainerState(kind="federated", seed=self.seed)
+        state = TrainerState(
+            kind="federated-icl" if client_exemplars is not None else "federated", seed=self.seed
+        )
         latest = self.checkpoints.latest()
         if resume and latest is not None:
             loaded = self.checkpoints.load(
@@ -148,13 +171,15 @@ class FederatedTrainer:
                 restore_rng=True,
             )
             state = loaded.trainer_state
+            if loaded.extra.get("training_context_sha256") != context_hash:
+                raise ValueError("federated resume has a different training exemplar context")
         elif latest is None:
             self.checkpoints.save(
                 "checkpoint-round-0000",
                 model=self.bundle.model,
                 optimizer=None,
                 trainer_state=state,
-                extra={"communication": {"uplink_bytes": 0, "downlink_bytes": 0}},
+                extra={"communication": {"uplink_bytes": 0, "downlink_bytes": 0}, **context_extra},
             )
 
         initial_elapsed_seconds = state.elapsed_seconds
@@ -178,6 +203,7 @@ class FederatedTrainer:
                 "source_checkpoint": previous_checkpoint.name if previous_checkpoint else None,
                 "seed": self.seed,
                 "config_hash": self.config.hash,
+                **context_extra,
             }
             if round_manifest.exists() and read_json(round_manifest) != identity:
                 raise ValueError(f"stale or incompatible partial round state: {round_manifest}")
@@ -210,6 +236,11 @@ class FederatedTrainer:
                         seed=local_seed,
                         epochs=self.config.training.local_epochs,
                         kind=f"federated-client-{client_id}",
+                        **(
+                            {"exemplars": client_exemplars[client_id]}
+                            if client_exemplars is not None
+                            else {}
+                        ),
                     )
                     local_state = adapter_state(self.bundle.model)
                     save_adapter_state(update_path, local_state)
@@ -267,6 +298,7 @@ class FederatedTrainer:
                 trainer_state=state,
                 metrics=metrics,
                 extra={
+                    **context_extra,
                     "communication": communication,
                     "round_wall_clock_seconds": record["round_wall_clock_seconds"],
                 },

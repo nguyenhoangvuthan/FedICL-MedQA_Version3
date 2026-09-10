@@ -32,6 +32,7 @@ from fedicl_mqa.evaluation.reporting import (
 )
 from fedicl_mqa.modeling.loader import load_lora_bundle
 from fedicl_mqa.training.checkpointing import CheckpointManager
+from fedicl_mqa.training.context import bind_protocol, load_plan, training_inputs
 from fedicl_mqa.training.federated import adapter_state, set_adapter_state
 
 
@@ -41,6 +42,9 @@ def _load_arm_checkpoint(
     seed: int | None,
     round_index: int | None,
 ) -> tuple[Any, Any]:
+    if arm not in active_arms(config):
+        raise ValueError(f"arm {arm} is not enabled by this configuration")
+    plan = load_plan(config) if config.icl_training is not None else None
     runtime_seed = seed if seed is not None else config.experiment.data_seed
     bundle = load_lora_bundle(config, seed=runtime_seed)
     initial = adapter_state(bundle.model)
@@ -64,22 +68,21 @@ def _load_arm_checkpoint(
         return bundle, before_client
     if seed is None:
         raise ValueError(f"arm {arm} requires --seed")
-    if spec.checkpoint_family in {"local", "local-matched"}:
+    if spec.checkpoint_family in {"local", "local-matched", "local-icl"}:
         matched = spec.checkpoint_family == "local-matched"
         rounds = selected_round(config) if matched else 1
         family_root = (
             paths.matched_local_root(config, rounds)
             if matched
-            else checkpoint_root(config, "local")
+            else checkpoint_root(config, spec.checkpoint_family)
         )
-        partition = (
-            load_partition(data_root(config), expected_config_hash=config.hash)
-            if matched or config.controls is not None
-            else None
-        )
+        partition = _training_partition(config) if matched or config.controls is not None else None
 
         def before_client(client_id: int, model: Any) -> None:
             root = family_root / f"seed-{seed}" / f"client-{client_id}"
+            bind_protocol(
+                config, root.parent, plan, train_icl=spec.checkpoint_family == "local-icl"
+            )
             loaded = manager(root, keep=config.training.checkpoint_keep).load(
                 "last", model=model, restore_rng=False
             )
@@ -94,14 +97,17 @@ def _load_arm_checkpoint(
                     raise ValueError(f"{arm}: Local checkpoint has an incomplete training budget")
 
         return bundle, before_client
-    if spec.checkpoint_family == "federated":
+    if spec.checkpoint_family in {"federated", "federated-icl"}:
         selected = round_index or selected_round(config)
-        root = checkpoint_root(config, "federated") / f"seed-{seed}" / "global"
+        root = checkpoint_root(config, spec.checkpoint_family) / f"seed-{seed}" / "global"
+        bind_protocol(
+            config, root.parent, plan, train_icl=spec.checkpoint_family == "federated-icl"
+        )
         loaded = manager(root).load(
             f"checkpoint-round-{selected:04d}", model=bundle.model, restore_rng=False
         )
         if config.controls is not None:
-            partition = load_partition(data_root(config), expected_config_hash=config.hash)
+            partition = _training_partition(config)
             exposures = sum(len(v["fit"]) for v in partition.values()) * selected
             if (
                 loaded.trainer_state.round_index != selected
@@ -110,17 +116,24 @@ def _load_arm_checkpoint(
                 raise ValueError("federated checkpoint does not match the selected training budget")
         return bundle, None
     root = checkpoint_root(config, "centralized") / f"seed-{seed}"
+    bind_protocol(config, root, plan, train_icl=False)
     loaded = manager(root, keep=config.training.checkpoint_keep).load(
         "last", model=bundle.model, restore_rng=False
     )
     if config.controls is not None:
         epochs = selected_round(config) * config.training.local_epochs
-        partition = load_partition(data_root(config), expected_config_hash=config.hash)
+        partition = _training_partition(config)
         exposures = sum(len(v["fit"]) for v in partition.values()) * epochs
         state = loaded.trainer_state
         if state.epoch != epochs or state.batch_in_epoch or state.target_exposures != exposures:
             raise ValueError("centralized checkpoint does not match the selected training budget")
     return bundle, None
+
+
+def _training_partition(config: Config):
+    clients = load_partition(data_root(config), expected_config_hash=config.hash)
+    fit, _, _ = training_inputs(config, clients)
+    return {c: {**roles, "fit": fit[c]} for c, roles in clients.items()}
 
 
 def _effective_seeds(config: Config, arm: str) -> list[int | None]:
@@ -152,6 +165,8 @@ def _run_single_evaluation(
         selected = round_index or selected_round(config)
         prior_path = str(priors_path(config, seed=seed, round_index=selected))
     metadata: dict[str, Any] = {}
+    if config.icl_training is not None:
+        metadata["training_plan_sha256"] = load_plan(config)["sha256"]
     if config.controls is not None:
         metadata["selected_round"] = round_index or selected_round(config)
         if prior_path:
@@ -336,6 +351,7 @@ def command_report(args: argparse.Namespace) -> None:
         confidence=config.evaluation.confidence_level,
         bootstrap_seed=config.experiment.data_seed,
         controlled=config.controls is not None,
+        train_icl=config.icl_training is not None,
     )
     output = report_path(config)
     if config.controls is not None:
@@ -368,6 +384,12 @@ def validate_summary_identity(
     )
     if actual != expected:
         raise ValueError(f"{arm}/{seed}: stale or incompatible summary; rerun with --force")
+    if config.icl_training is not None:
+        if (
+            summary.get("run_metadata", {}).get("training_plan_sha256")
+            != load_plan(config)["sha256"]
+        ):
+            raise ValueError("evaluation training cohort differs from the frozen plan")
     predictions = (
         evaluation_dir(config, arm, seed=seed, split=split, round_index=round_index)
         / "predictions.jsonl"

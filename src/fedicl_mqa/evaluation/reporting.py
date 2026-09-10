@@ -35,6 +35,15 @@ CONTROLLED_CONTRASTS = {
     "prior_vs_shuffled": ("FS", "F2"),
 }
 
+TRAIN_ICL_CONTRASTS = {
+    "local_train_icl_eval_k0": ("L0", "LT0"),
+    "local_train_icl_eval_k5": ("L1", "LT1"),
+    "local_eval_icl_after_train_icl": ("LT0", "LT1"),
+    "fl_train_icl_eval_k0": ("F0", "FT0"),
+    "fl_train_icl_eval_k5": ("F1", "FT1"),
+    "fl_eval_icl_after_train_icl": ("FT0", "FT1"),
+}
+
 
 def read_predictions(path: str | Path) -> list[Prediction]:
     result: list[Prediction] = []
@@ -54,9 +63,12 @@ def build_contrast_report(
     confidence: float,
     bootstrap_seed: int,
     controlled: bool = False,
+    train_icl: bool = False,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {"primary": {}, "descriptive": {}}
-    contrasts = CONTROLLED_CONTRASTS if controlled else PRIMARY_CONTRASTS
+    contrasts = dict(CONTROLLED_CONTRASTS if controlled else PRIMARY_CONTRASTS)
+    if train_icl:
+        contrasts.update(TRAIN_ICL_CONTRASTS)
     for name, (left_arm, right_arm) in contrasts.items():
         left = arm_predictions[left_arm]
         right = arm_predictions[right_arm]

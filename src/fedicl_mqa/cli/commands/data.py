@@ -142,3 +142,12 @@ def command_audit_retrieval(args: argparse.Namespace) -> None:
         f"Audited Top-{config.retrieval.top_k} capacity for {result['query_count']} queries; "
         f"manifest: {output}"
     )
+
+
+def command_audit_training_icl(args: argparse.Namespace) -> None:
+    from fedicl_mqa.training.context import audit_training_context
+
+    config = seal_config(args.config)
+    clients = load_partition(data_root(config), expected_config_hash=config.hash)
+    plan = audit_training_context(config, clients)
+    print(f"Training context plan: {plan['sha256']}")

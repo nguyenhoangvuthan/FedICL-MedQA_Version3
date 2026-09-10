@@ -19,12 +19,16 @@ def train_local_clients(
     output_root: str | Path,
     resume: str | None = "auto",
     fl_rounds: int | None = None,
+    client_exemplars: Mapping[int, Mapping[str, Sequence[MCQExample]]] | None = None,
 ) -> dict[int, dict[str, float | str]]:
     if fl_rounds is not None and fl_rounds not in config.training.fl_round_candidates:
         raise ValueError("matched Local requires a valid selected FL round")
     bundle = load_lora_bundle(config, seed=seed)
     initial_adapter = adapter_state(bundle.model)
     telemetry: dict[int, dict[str, float | str]] = {}
+    family = (
+        "local-icl" if client_exemplars is not None else "local-matched" if fl_rounds else "local"
+    )
     for client_id in range(config.data.num_clients):
         set_adapter_state(bundle.model, initial_adapter)
         local_seed = seed * 1_000 + client_id
@@ -42,9 +46,10 @@ def train_local_clients(
             config,
             seed=local_seed,
             epochs=config.training.local_epochs * (fl_rounds or 1),
-            kind=f"{'local-matched' if fl_rounds else 'local'}-client-{client_id}",
+            kind=f"{family}-client-{client_id}",
             checkpoint_manager=manager,
             resume=resume,
+            **({"exemplars": client_exemplars[client_id]} if client_exemplars is not None else {}),
         )
         telemetry[client_id] = run_metrics
         if fl_rounds is not None:
@@ -92,6 +97,8 @@ def train_federated(
     seed: int,
     output_root: str | Path,
     resume: str | None = "auto",
+    client_exemplars: Mapping[int, Mapping[str, Sequence[MCQExample]]] | None = None,
+    rounds: int | None = None,
 ) -> FederatedTrainer:
     bundle = load_lora_bundle(config, seed=seed)
     trainer = FederatedTrainer(
@@ -102,7 +109,8 @@ def train_federated(
     )
     trainer.run(
         client_fit,
-        rounds=max(config.training.fl_round_candidates),
+        rounds=rounds or max(config.training.fl_round_candidates),
         resume=resume,
+        **({"client_exemplars": client_exemplars} if client_exemplars is not None else {}),
     )
     return trainer

@@ -26,6 +26,7 @@ from fedicl_mqa.evaluation.priors import (
     write_priors,
 )
 from fedicl_mqa.training.checkpointing import CheckpointManager
+from fedicl_mqa.training.context import bind_protocol, training_inputs
 from fedicl_mqa.training.workflows import train_centralized, train_federated, train_local_clients
 
 
@@ -44,16 +45,25 @@ def command_train(args: argparse.Namespace) -> None:
     if args.fl_round is not None and args.mode not in {"centralized", "local-matched"}:
         raise ValueError("--fl-round is only valid for centralized or local-matched training")
     clients = load_partition(data_root(config), expected_config_hash=config.hash)
-    client_fit = {client: values["fit"] for client, values in clients.items()}
+    train_icl = args.mode in {"local-icl", "federated-icl"}
+    if train_icl and config.icl_training is None:
+        raise ValueError("ICL training modes require icl_training in a fresh configuration")
+    client_fit, client_exemplars, plan = training_inputs(config, clients)
     for seed in _requested_seeds(config, args):
         telemetry_root = checkpoint_root(config, args.mode)
-        if args.mode == "local":
+        if args.mode == "local-matched":
+            telemetry_root = matched_local_root(config, args.fl_round or selected_round(config))
+        bind_protocol(
+            config, telemetry_root / f"seed-{seed}", plan, train_icl=train_icl, create=True
+        )
+        if args.mode in {"local", "local-icl"}:
             telemetry = train_local_clients(
                 config,
                 client_fit,
                 seed=seed,
-                output_root=checkpoint_root(config, "local"),
+                output_root=telemetry_root,
                 resume=args.resume,
+                **({"client_exemplars": client_exemplars} if train_icl else {}),
             )
         elif args.mode == "local-matched":
             fl_round = args.fl_round or selected_round(config)
@@ -66,13 +76,18 @@ def command_train(args: argparse.Namespace) -> None:
                 resume=args.resume,
                 fl_rounds=fl_round,
             )
-        elif args.mode == "federated":
+        elif args.mode in {"federated", "federated-icl"}:
             trainer = train_federated(
                 config,
                 client_fit,
                 seed=seed,
-                output_root=checkpoint_root(config, "federated"),
+                output_root=telemetry_root,
                 resume=args.resume,
+                **(
+                    {"client_exemplars": client_exemplars, "rounds": selected_round(config)}
+                    if train_icl
+                    else {}
+                ),
             )
             if trainer.final_state is None:
                 raise RuntimeError("federated trainer returned without final state")

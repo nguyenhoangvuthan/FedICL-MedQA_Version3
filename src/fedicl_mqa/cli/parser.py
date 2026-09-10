@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 
-from fedicl_mqa.cli.commands.data import command_audit_retrieval, command_prepare_data
+from fedicl_mqa.cli.commands.data import (
+    command_audit_retrieval,
+    command_audit_training_icl,
+    command_prepare_data,
+)
 from fedicl_mqa.cli.commands.diagnostics import command_doctor
 from fedicl_mqa.cli.commands.evaluation import (
     command_evaluate,
@@ -58,12 +62,29 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--config", required=True)
     audit.set_defaults(func=command_audit_retrieval)
 
+    train_audit = subparsers.add_parser(
+        "audit-training-icl",
+        parents=[gpu],
+        help="freeze local train exemplars and common fit cohort",
+    )
+    train_audit.add_argument("--config", required=True)
+    train_audit.set_defaults(func=command_audit_training_icl)
+
     training = subparsers.add_parser(
         "train", parents=[gpu], help="train Local, Federated or Central LoRA"
     )
     training.add_argument("--config", required=True)
     training.add_argument(
-        "--mode", choices=["local", "local-matched", "federated", "centralized"], required=True
+        "--mode",
+        choices=[
+            "local",
+            "local-matched",
+            "federated",
+            "centralized",
+            "local-icl",
+            "federated-icl",
+        ],
+        required=True,
     )
     seed_group = training.add_mutually_exclusive_group(required=True)
     seed_group.add_argument("--seed", type=int)

@@ -48,13 +48,24 @@ ARMS: dict[str, ArmSpec] = {
     "FD": ArmSpec("FD", "federated", True, diversity=True),
     "FP": ArmSpec("FP", "federated", True, client_aware=True),
     "FS": ArmSpec("FS", "federated", True, True, True, True),
+    "LT0": ArmSpec("LT0", "local-icl", False),
+    "LT1": ArmSpec("LT1", "local-icl", True),
+    "FT0": ArmSpec("FT0", "federated-icl", False),
+    "FT1": ArmSpec("FT1", "federated-icl", True),
 }
 
+TRAIN_ICL_ARMS = ("LT0", "LT1", "FT0", "FT1")
 LEGACY_ARMS = ("B0", "B1", "C0", "F0", "F1", "F2", "L0", "L1")
 
 
 def active_arms(config: Config) -> tuple[str, ...]:
-    return tuple(sorted(ARMS)) if config.controls is not None else LEGACY_ARMS
+    if config.icl_training is not None:
+        return tuple(sorted(ARMS))
+    return (
+        tuple(sorted(set(ARMS) - set(TRAIN_ICL_ARMS)))
+        if config.controls is not None
+        else LEGACY_ARMS
+    )
 
 
 def select_exemplars(
@@ -112,6 +123,8 @@ def evaluate_arm(
     arm_name = arm.upper()
     if arm_name not in ARMS:
         raise ValueError(f"unknown arm {arm!r}; choose from {sorted(ARMS)}")
+    if arm_name in TRAIN_ICL_ARMS and config.icl_training is None:
+        raise ValueError("train-ICL arms require an icl_training configuration")
     if split not in {"validation", "test"}:
         raise ValueError("evaluation split must be validation or test")
     spec = ARMS[arm_name]

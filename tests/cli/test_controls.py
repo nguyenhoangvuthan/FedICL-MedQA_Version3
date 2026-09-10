@@ -31,6 +31,7 @@ class ConfigControlTests(unittest.TestCase):
         config = Config()
         legacy = asdict(config)
         legacy.pop("controls")
+        legacy.pop("icl_training")
         self.assertEqual(config.to_dict(), legacy)
         self.assertEqual(config.hash, object_hash(legacy))
         self.assertEqual(len(active_arms(config)), 8)

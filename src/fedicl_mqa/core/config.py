@@ -126,6 +126,13 @@ class ControlSettings:
 
 
 @dataclass(slots=True)
+class ICLTrainingSettings:
+    """Opt-in train/eval context factorial on a shared audited fit cohort."""
+
+    top_k: int = 5
+
+
+@dataclass(slots=True)
 class Config:
     experiment: ExperimentSettings = field(default_factory=ExperimentSettings)
     data: DataSettings = field(default_factory=DataSettings)
@@ -136,6 +143,7 @@ class Config:
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
     hardware: HardwareSettings = field(default_factory=HardwareSettings)
     controls: ControlSettings | None = None
+    icl_training: ICLTrainingSettings | None = None
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Config:
@@ -175,11 +183,19 @@ class Config:
                 if payload.get("controls") is not None
                 else None
             ),
+            icl_training=(
+                _construct(ICLTrainingSettings, payload["icl_training"])
+                if payload.get("icl_training") is not None
+                else None
+            ),
         )
         config.validate()
         return config
 
     def validate(self) -> None:
+        if self.icl_training is not None:
+            if self.controls is None or self.icl_training.top_k != 5:
+                raise ValueError("ICL training requires controls and exactly five train exemplars")
         if self.controls is not None:
             if self.data.dataset != "medmcqa":
                 raise ValueError("controlled protocol requires native MedMCQA subject labels")
@@ -255,6 +271,8 @@ class Config:
         payload = asdict(self)
         if self.controls is None:
             del payload["controls"]
+        if self.icl_training is None:
+            del payload["icl_training"]
         return payload
 
 

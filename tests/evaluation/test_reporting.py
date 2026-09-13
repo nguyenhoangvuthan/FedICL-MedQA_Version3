@@ -103,6 +103,74 @@ class ControlledReportingTests(unittest.TestCase):
                 predictions, samples=20, confidence=0.95, bootstrap_seed=1, controlled=True
             )
 
+    def test_arm_subset_reports_only_contrasts_with_both_sides_present(self):
+        from fedicl_mqa.evaluation.reporting import TRAIN_ICL_CONTRASTS
+
+        predictions = {
+            arm: {42: values(correct=arm in {"FT0", "FT1"}, likelihood_correct=True, seed=42)}
+            for arm in ("F0", "F1", "FT0", "FT1")
+        }
+        report = build_contrast_report(
+            predictions,
+            samples=20,
+            confidence=0.95,
+            bootstrap_seed=1,
+            controlled=True,
+            train_icl=True,
+            arms=("F0", "F1", "FT0", "FT1"),
+        )
+        self.assertEqual(
+            set(report["primary"]),
+            {
+                "fl_icl",
+                "fl_train_icl_eval_k0",
+                "fl_train_icl_eval_k5",
+                "fl_eval_icl_after_train_icl",
+            },
+        )
+        self.assertTrue(set(report["primary"]) < set(TRAIN_ICL_CONTRASTS) | {"fl_icl"})
+        self.assertEqual(report["primary"]["fl_train_icl_eval_k0"]["effect"], 1)
+        self.assertEqual(report["arms"], ["F0", "F1", "FT0", "FT1"])
+        self.assertTrue(report["partial"])
+        self.assertNotIn("central", report["descriptive"])
+
+    def test_arm_subset_without_any_full_pair_is_rejected(self):
+        predictions = {
+            arm: {42: values(correct=True, likelihood_correct=True, seed=42)}
+            for arm in ("F0", "LT1")
+        }
+        with self.assertRaisesRegex(ValueError, "no declared contrast"):
+            build_contrast_report(
+                predictions,
+                samples=20,
+                confidence=0.95,
+                bootstrap_seed=1,
+                controlled=True,
+                train_icl=True,
+                arms=("F0", "LT1"),
+            )
+
+    def test_full_arm_list_is_not_marked_partial(self):
+        from fedicl_mqa.evaluation.arms import ARMS
+
+        predictions = {
+            arm: {
+                seed: values(correct=True, likelihood_correct=True, seed=seed)
+                for seed in ([None] if spec.checkpoint_family == "base" else [42])
+            }
+            for arm, spec in ARMS.items()
+        }
+        report = build_contrast_report(
+            predictions,
+            samples=20,
+            confidence=0.95,
+            bootstrap_seed=1,
+            controlled=True,
+            train_icl=True,
+        )
+        self.assertFalse(report["partial"])
+        self.assertEqual(len(report["primary"]), 16)
+
     def test_pairing_rejects_changed_gold_labels(self):
         from dataclasses import replace
 

@@ -181,3 +181,61 @@ class SweepSideEffectTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PartialReportTests(unittest.TestCase):
+    """`report --arms` serves a pilot that evaluated only some arms.
+
+    It must never write the canonical contrasts.json: the pipeline treats that file
+    as proof the full report is done and would skip it on the next run.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.config = _config(self.root)
+        self.config.experiment.training_seeds = [42]
+        self.config.evaluation.bootstrap_samples = 20
+        self.addCleanup(self._tmp.cleanup)
+        for arm, correct in (("F0", False), ("F1", True)):
+            path = paths.arms_root(self.config) / arm / "seed-42" / "test" / "selected"
+            path.mkdir(parents=True)
+            rows = [
+                {
+                    "prediction": {
+                        "example_id": f"q-{i}",
+                        "gold": i % 4,
+                        "predicted": i % 4 if correct else (i + 1) % 4,
+                        "stage": "terminal_label",
+                        "client_id": 0,
+                        "subject": "medicine",
+                        "seed": 42,
+                        "likelihood_predicted": i % 4,
+                        "likelihood_confidence": 0.5,
+                    }
+                }
+                for i in range(8)
+            ]
+            (path / "predictions.jsonl").write_text(
+                "\n".join(__import__("json").dumps(r) for r in rows) + "\n", encoding="utf-8"
+            )
+
+    def _report(self, arms: list[str] | None) -> None:
+        import argparse
+
+        with mock.patch.object(evaluation, "seal_config", return_value=self.config):
+            evaluation.command_report(argparse.Namespace(config="unused", arms=arms))
+
+    def test_subset_is_written_beside_not_over_the_canonical_report(self) -> None:
+        self._report(["F1", "F0"])
+        canonical = paths.report_path(self.config)
+        partial = canonical.with_name("contrasts-F0-F1.json")
+        self.assertFalse(canonical.exists())
+        report = read_json(partial)
+        self.assertTrue(report["partial"])
+        self.assertEqual(set(report["primary"]), {"fl_icl"})
+        self.assertEqual(report["primary"]["fl_icl"]["effect"], 1.0)
+
+    def test_arm_outside_the_active_set_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not enabled"):
+            self._report(["F0", "FT0"])

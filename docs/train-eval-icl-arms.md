@@ -106,3 +106,60 @@ Validation includes CPU tests with a tiny locally initialized Qwen3/LoRA model:
 training with demonstrations, exact interrupted/resumed Local adapter equality,
 and two-client FedAvg training/resume. This is functional validation, not an A5000
 memory measurement or a full MedMCQA accuracy experiment.
+
+## One-seed FL-only pilot
+
+`configs/a5000-medmcqa-train-icl-pilot.yaml` is a one-seed, subsampled run
+(train 25k, internal validation 6k, full 4,181-question final test) meant to
+give a directional read on **FL with vs. without ICL** before the three-seed
+study. A smaller validation sample (3k) fails the other-client coverage guard
+(`Orthopaedics: 8 < 10`); 6k passes with a minimum of 15. Do not report pilot
+numbers as the final experiment: one seed collapses the hierarchical bootstrap
+to an item bootstrap, so the interval ignores training-seed variance.
+
+Only the two federated families are trained. Nothing in the F-arms depends on
+Local, matched Local or Centralized checkpoints; they do depend on the frozen
+training plan and the validation-selected round. One resumable command runs the
+nine steps in that order:
+
+```powershell
+uv run --no-sync fedicl-mqa pipeline --config configs/a5000-medmcqa-train-icl-pilot.yaml --gpu 1 --arms F0 F1 FT0 FT1
+```
+
+The same steps individually, should one need to be re-run by hand:
+
+```powershell
+$cfg = "configs/a5000-medmcqa-train-icl-pilot.yaml"
+uv run --no-sync fedicl-mqa prepare-data       --config $cfg
+uv run --no-sync fedicl-mqa audit-retrieval    --config $cfg --gpu 1
+uv run --no-sync fedicl-mqa audit-training-icl --config $cfg --gpu 1
+
+$cfg = "outputs/a5000-medmcqa-train-icl-pilot/sealed_config.json"
+# k=0 training, 8 rounds; then pick R from validation at rounds 4/6/8.
+uv run --no-sync fedicl-mqa train --config $cfg --mode federated --all-seeds --resume auto --gpu 1
+foreach ($r in 4, 6, 8) {
+  uv run --no-sync fedicl-mqa evaluate --config $cfg --arm F0 --seed 42 --split validation --round $r --gpu 1
+}
+uv run --no-sync fedicl-mqa select-round --config $cfg
+
+# k=5 training for exactly R rounds (fine-tuning with five frozen exemplars per prompt).
+uv run --no-sync fedicl-mqa train --config $cfg --mode federated-icl --all-seeds --resume auto --gpu 1
+
+# Final test: non-ICL and ICL evaluation of both checkpoints.
+foreach ($arm in "F0", "F1", "FT0", "FT1") {
+  uv run --no-sync fedicl-mqa evaluate-arm --config $cfg --arm $arm --gpu 1
+}
+uv run --no-sync fedicl-mqa report --config $cfg --arms F0 F1 FT0 FT1
+```
+
+`report --arms` writes `reports/medmcqa/contrasts-F0-F1-FT0-FT1.json`, marked
+`"partial": true`, with Holm correction over the four surviving contrasts
+(F0−F1, F0−FT0, F1−FT1, FT0−FT1). It never touches `contrasts.json`, so the
+full pipeline can still be run later in the same output directory.
+`arms_comparison.md` is updated after every `evaluate-arm` and gives point
+estimates while the sweep is still running.
+
+Reading the pilot: F1−F0 and FT1−FT0 answer whether inference-time exemplars
+help at all; F0−FT0 and F1−FT1 answer whether training with exemplars helps.
+If all four intervals cover zero, the small model is not using demonstrations
+and the method rather than the seed count should change.

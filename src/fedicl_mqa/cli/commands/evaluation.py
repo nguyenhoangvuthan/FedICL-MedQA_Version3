@@ -313,7 +313,11 @@ def command_report(args: argparse.Namespace) -> None:
     if config.controls is not None:
         clients = load_partition(data_root(config), expected_config_hash=config.hash)
         cohort = {q.example_id: (c, q) for c, roles in clients.items() for q in roles["test"]}
-    for arm in active_arms(config):
+    requested = getattr(args, "arms", None)
+    arms = active_arms(config) if not requested else tuple(sorted({a.upper() for a in requested}))
+    for arm in arms:
+        if arm not in active_arms(config):
+            raise ValueError(f"arm {arm} is not enabled by this configuration")
         family = ARMS[arm].checkpoint_family
         if family == "base":
             path = root / arm / "deterministic" / "test" / "selected" / "predictions.jsonl"
@@ -352,8 +356,13 @@ def command_report(args: argparse.Namespace) -> None:
         bootstrap_seed=config.experiment.data_seed,
         controlled=config.controls is not None,
         train_icl=config.icl_training is not None,
+        arms=arms if requested else None,
     )
     output = report_path(config)
+    if requested:
+        # A subset report never claims the canonical path: the pipeline reads
+        # contrasts.json as proof that the full report is done.
+        output = output.with_name(f"contrasts-{'-'.join(arms)}.json")
     if config.controls is not None:
         report["protocol"] = {
             "config_hash": config.hash,

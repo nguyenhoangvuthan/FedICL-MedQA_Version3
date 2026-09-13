@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -64,11 +64,29 @@ def build_contrast_report(
     bootstrap_seed: int,
     controlled: bool = False,
     train_icl: bool = False,
+    arms: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    report: dict[str, Any] = {"primary": {}, "descriptive": {}}
+    """Bootstrap every declared contrast whose two arms are both available.
+
+    arms restricts the report to a subset, e.g. a pilot that evaluated only the
+    federated families. Holm correction then runs over the surviving contrasts
+    only, so a partial report is not interchangeable with the full one; it is
+    marked partial and lists the arms it covers.
+    """
     contrasts = dict(CONTROLLED_CONTRASTS if controlled else PRIMARY_CONTRASTS)
     if train_icl:
         contrasts.update(TRAIN_ICL_CONTRASTS)
+    declared = {arm for pair in contrasts.values() for arm in pair}
+    available = sorted(declared if arms is None else set(arms))
+    contrasts = {name: pair for name, pair in contrasts.items() if set(pair) <= set(available)}
+    if not contrasts:
+        raise ValueError(f"no declared contrast has both arms in {available}")
+    report: dict[str, Any] = {
+        "primary": {},
+        "descriptive": {},
+        "arms": available,
+        "partial": set(available) != declared,
+    }
     for name, (left_arm, right_arm) in contrasts.items():
         left = arm_predictions[left_arm]
         right = arm_predictions[right_arm]

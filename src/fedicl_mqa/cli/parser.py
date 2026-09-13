@@ -120,6 +120,12 @@ def build_parser() -> argparse.ArgumentParser:
         "report", parents=[gpu], help="bootstrap the six primary contrasts"
     )
     report.add_argument("--config", required=True)
+    report.add_argument(
+        "--arms",
+        nargs="+",
+        choices=sorted(ARMS),
+        help="report only the contrasts among these arms; written beside contrasts.json",
+    )
     report.set_defaults(func=command_report)
 
     sweep = subparsers.add_parser(
@@ -156,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
     whole.add_argument("--split", choices=["validation", "test"], default="test")
     whole.add_argument(
         "--force", action="store_true", help="re-run every step, ignoring finished work"
+    )
+    whole.add_argument(
+        "--arms",
+        nargs="+",
+        choices=sorted(ARMS),
+        help="run only the steps these arms need and write a partial report",
     )
     whole.set_defaults(func=command_pipeline)
 

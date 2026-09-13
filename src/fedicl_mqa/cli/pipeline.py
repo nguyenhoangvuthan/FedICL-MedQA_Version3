@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +34,7 @@ from fedicl_mqa.cli.commands import evaluation as evaluation_commands
 from fedicl_mqa.cli.commands import training as training_commands
 from fedicl_mqa.core.config import Config
 from fedicl_mqa.core.io import atomic_write_text, read_json
-from fedicl_mqa.evaluation.arms import active_arms
+from fedicl_mqa.evaluation.arms import ARMS, active_arms
 from fedicl_mqa.training.context import load_plan, plan_path
 
 logger = logging.getLogger(__name__)
@@ -52,18 +52,47 @@ def _namespace(config_path: str | Path, **fields: Any) -> argparse.Namespace:
     return argparse.Namespace(config=str(config_path), **fields)
 
 
+# Checkpoint families that resolve "the selected round" and so need F0 trained,
+# evaluated on validation and selected before they can start.
+_NEEDS_SELECTED_ROUND = {"federated", "federated-icl", "local-matched", "centralized"}
+
+
 def build_steps(
-    config: Config, *, split: str, force: bool, config_path: str | Path | None = None
+    config: Config,
+    *,
+    split: str,
+    force: bool,
+    config_path: str | Path | None = None,
+    arms: Sequence[str] | None = None,
 ) -> list[Step]:
     """The ten steps, in the order their outputs become available.
 
     config_path is the file the user invoked with. Only prepare-data needs it, since
     it is what turns a YAML config into the sealed one every later step reads.
+
+    arms restricts the run to the steps those arms depend on: only their checkpoint
+    families are trained, only they are evaluated, and the report is the partial
+    one written beside contrasts.json. Data preparation and audits always run so
+    the cohort is identical to a later full run in the same output directory.
     """
     sealed = paths.output_root(config) / "sealed_config.json"
     source = config_path if config_path is not None else sealed
     seeds = list(config.experiment.training_seeds)
     rounds = list(config.training.fl_round_candidates)
+    subset = tuple(sorted({arm.upper() for arm in arms})) if arms else None
+    if subset:
+        for arm in subset:
+            if arm not in active_arms(config):
+                raise ValueError(f"arm {arm} is not enabled by this configuration")
+    families = (
+        {ARMS[arm].checkpoint_family for arm in subset}
+        if subset
+        else {ARMS[arm].checkpoint_family for arm in active_arms(config)}
+    )
+    wants_priors = subset is None or any(ARMS[arm].client_aware for arm in subset)
+
+    def family(*names: str) -> bool:
+        return bool(families & set(names))
 
     def done(predicate: Callable[[], bool]) -> Callable[[], bool]:
         # --force re-runs everything, so nothing may report itself as already done.
@@ -178,6 +207,8 @@ def build_steps(
 
     def report_complete() -> bool:
         target = paths.report_path(config)
+        if subset:
+            target = target.with_name(f"contrasts-{'-'.join(subset)}.json")
         if not target.exists():
             return False
         if config.controls is None:
@@ -189,7 +220,7 @@ def build_steps(
         ):
             return False
         recorded = report.get("prediction_sha256", {})
-        for arm in active_arms(config):
+        for arm in subset or active_arms(config):
             for seed in evaluation_commands._effective_seeds(config, arm):
                 summary = read_json(
                     paths.summary_path(config, arm, seed=seed, split="test", round_index=None)
@@ -200,8 +231,14 @@ def build_steps(
                     return False
         return True
 
+    def evaluate_arms() -> None:
+        for arm in subset or ():
+            evaluation_commands.command_evaluate_arm(
+                _namespace(sealed, arm=arm, split=split, round=None, force=force)
+            )
+
     def evaluations_complete() -> bool:
-        for arm in active_arms(config):
+        for arm in subset or active_arms(config):
             for seed in evaluation_commands._effective_seeds(config, arm):
                 target = paths.summary_path(config, arm, seed=seed, split=split, round_index=None)
                 if not target.exists():
@@ -246,52 +283,72 @@ def build_steps(
             if config.icl_training is not None
             else []
         ),
-        Step("train-local", train("local"), lambda: False),
-        Step("train-federated", train("federated"), lambda: False),
-        Step("evaluate-f0-validation", evaluate_f0_validation, done(f0_validation_complete)),
-        Step(
-            "select-round",
-            lambda: training_commands.command_select_round(_namespace(sealed)),
-            done(
-                lambda: (
-                    paths.checkpoint_root(config, "federated") / "selected_round.json"
-                ).exists()
-            ),
+        *([Step("train-local", train("local"), lambda: False)] if family("local") else []),
+        *(
+            [
+                Step("train-federated", train("federated"), lambda: False),
+                Step(
+                    "evaluate-f0-validation", evaluate_f0_validation, done(f0_validation_complete)
+                ),
+                Step(
+                    "select-round",
+                    lambda: training_commands.command_select_round(_namespace(sealed)),
+                    done(
+                        lambda: (
+                            paths.checkpoint_root(config, "federated") / "selected_round.json"
+                        ).exists()
+                    ),
+                ),
+            ]
+            if family(*_NEEDS_SELECTED_ROUND)
+            else []
         ),
         *(
             [Step("build-priors", build_priors, done(priors_complete))]
-            if config.controls is not None
+            if config.controls is not None and wants_priors
             else []
         ),
-        Step("train-centralized", train("centralized"), lambda: False),
         *(
-            [
-                Step("train-local-icl", train("local-icl"), lambda: False),
-                Step("train-federated-icl", train("federated-icl"), lambda: False),
-            ]
-            if config.icl_training is not None
+            [Step("train-centralized", train("centralized"), lambda: False)]
+            if family("centralized")
+            else []
+        ),
+        *(
+            [Step("train-local-icl", train("local-icl"), lambda: False)]
+            if config.icl_training is not None and family("local-icl")
+            else []
+        ),
+        *(
+            [Step("train-federated-icl", train("federated-icl"), lambda: False)]
+            if config.icl_training is not None and family("federated-icl")
             else []
         ),
         *(
             [Step("train-local-matched", train("local-matched"), lambda: False)]
-            if config.controls is not None
+            if config.controls is not None and family("local-matched")
             else []
         ),
         *(
             [Step("build-priors", build_priors, done(priors_complete))]
-            if config.controls is None
+            if config.controls is None and wants_priors
             else []
         ),
-        Step(
-            "evaluate-all",
-            lambda: evaluation_commands.command_evaluate_all(
-                _namespace(sealed, split=split, round=None, force=force)
-            ),
-            done(evaluations_complete),
+        (
+            Step("evaluate-arms", evaluate_arms, done(evaluations_complete))
+            if subset
+            else Step(
+                "evaluate-all",
+                lambda: evaluation_commands.command_evaluate_all(
+                    _namespace(sealed, split=split, round=None, force=force)
+                ),
+                done(evaluations_complete),
+            )
         ),
         Step(
             "report",
-            lambda: evaluation_commands.command_report(_namespace(sealed)),
+            lambda: evaluation_commands.command_report(
+                _namespace(sealed, arms=list(subset) if subset else None)
+            ),
             done(report_complete),
         ),
     ]
@@ -364,7 +421,13 @@ def execute(config: Config, steps: list[Step]) -> list[dict[str, Any]]:
 
 def command_pipeline(args: argparse.Namespace) -> None:
     config = paths.seal_config(args.config)
-    steps = build_steps(config, split=args.split, force=args.force, config_path=args.config)
+    steps = build_steps(
+        config,
+        split=args.split,
+        force=args.force,
+        config_path=args.config,
+        arms=getattr(args, "arms", None),
+    )
     execute(config, steps)
     print(f"\nPipeline state: {paths.pipeline_state_path(config)}")
     print(f"Comparison table: {paths.comparison_path(config, 'md')}")

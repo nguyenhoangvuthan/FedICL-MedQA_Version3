@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from pathlib import Path
+from unittest import mock
 
 import yaml
 
 from fedicl_mqa.cli import paths, pipeline
-from fedicl_mqa.core.config import Config
+from fedicl_mqa.cli.commands import evaluation as evaluation_commands
+from fedicl_mqa.core.config import Config, ControlSettings, ICLTrainingSettings
 
 
-def _step(name: str, *, done: bool = False, calls: list[str] | None = None,
-          fails: bool = False) -> pipeline.Step:
+def _step(
+    name: str, *, done: bool = False, calls: list[str] | None = None, fails: bool = False
+) -> pipeline.Step:
     def run() -> None:
         if calls is not None:
             calls.append(name)
@@ -62,6 +64,85 @@ class StepDefinitionTests(unittest.TestCase):
         self.assertFalse(steps["audit-retrieval"].is_done())
 
 
+class ArmSubsetStepTests(unittest.TestCase):
+    """`pipeline --arms` keeps only the steps the requested arms depend on."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.config = Config()
+        self.config.experiment.output_dir = self._tmp.name
+        self.config.data.dataset = "medmcqa"
+        self.config.controls = ControlSettings()
+        self.config.icl_training = ICLTrainingSettings()
+        self.addCleanup(self._tmp.cleanup)
+
+    def names(self, arms: list[str]) -> list[str]:
+        return [
+            s.name for s in pipeline.build_steps(self.config, split="test", force=False, arms=arms)
+        ]
+
+    def test_federated_arms_skip_local_centralized_and_priors(self) -> None:
+        self.assertEqual(
+            self.names(["F0", "F1", "FT0", "FT1"]),
+            [
+                "prepare-data",
+                "audit-retrieval",
+                "audit-training-icl",
+                "train-federated",
+                "evaluate-f0-validation",
+                "select-round",
+                "train-federated-icl",
+                "evaluate-arms",
+                "report",
+            ],
+        )
+
+    def test_prior_arms_pull_in_build_priors(self) -> None:
+        names = self.names(["F1", "FP"])
+        self.assertIn("build-priors", names)
+        self.assertNotIn("train-federated-icl", names)
+        self.assertLess(names.index("select-round"), names.index("build-priors"))
+
+    def test_matched_local_needs_the_selected_round_but_not_federated_icl(self) -> None:
+        names = self.names(["LM0"])
+        self.assertIn("train-federated", names)
+        self.assertIn("select-round", names)
+        self.assertIn("train-local-matched", names)
+        self.assertNotIn("train-federated-icl", names)
+        self.assertNotIn("train-local", names)
+
+    def test_inactive_arm_is_rejected(self) -> None:
+        self.config.icl_training = None
+        with self.assertRaisesRegex(ValueError, "not enabled"):
+            self.names(["F0", "FT0"])
+
+    def test_evaluate_arms_step_evaluates_each_requested_arm(self) -> None:
+        seen: list[str] = []
+        steps = {
+            s.name: s
+            for s in pipeline.build_steps(
+                self.config, split="test", force=False, arms=["FT1", "F0"]
+            )
+        }
+        with mock.patch.object(
+            evaluation_commands, "command_evaluate_arm", lambda ns: seen.append(ns.arm)
+        ):
+            steps["evaluate-arms"].run()
+        self.assertEqual(seen, ["F0", "FT1"])
+
+    def test_report_step_passes_the_arm_subset(self) -> None:
+        seen: list[list[str]] = []
+        steps = {
+            s.name: s
+            for s in pipeline.build_steps(self.config, split="test", force=False, arms=["F0", "F1"])
+        }
+        with mock.patch.object(
+            evaluation_commands, "command_report", lambda ns: seen.append(ns.arms)
+        ):
+            steps["report"].run()
+        self.assertEqual(seen, [["F0", "F1"]])
+
+
 class ExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -70,9 +151,7 @@ class ExecutionTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def state(self) -> dict:
-        return yaml.safe_load(
-            paths.pipeline_state_path(self.config).read_text(encoding="utf-8")
-        )
+        return yaml.safe_load(paths.pipeline_state_path(self.config).read_text(encoding="utf-8"))
 
     def test_runs_every_step_in_order(self) -> None:
         calls: list[str] = []
@@ -120,9 +199,7 @@ class ExecutionTests(unittest.TestCase):
     def test_rerunning_after_a_failure_resumes(self) -> None:
         calls: list[str] = []
         with self.assertRaises(RuntimeError):
-            pipeline.execute(
-                self.config, [_step("one", calls=calls), _step("two", fails=True)]
-            )
+            pipeline.execute(self.config, [_step("one", calls=calls), _step("two", fails=True)])
         calls.clear()
         pipeline.execute(
             self.config, [_step("one", done=True, calls=calls), _step("two", calls=calls)]

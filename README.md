@@ -1,5 +1,48 @@
 # FedICL-MQA
 
+## Quick start: does ICL help federated training? (one seed, one command)
+
+The fastest way to a directional answer on **FL with vs. without ICL** is the
+one-seed pilot. It trains only the two federated families and evaluates the four
+arms that answer the question:
+
+| Arm | Fine-tuned with exemplars | Evaluated with exemplars |
+| --- | :-: | :-: |
+| F0 | no | no |
+| F1 | no | 5 |
+| FT0 | 5 | no |
+| FT1 | 5 | 5 |
+
+```powershell
+uv run --no-sync fedicl-mqa pipeline --config configs/a5000-medmcqa-train-icl-pilot.yaml --gpu 1 --arms F0 F1 FT0 FT1
+```
+
+On Linux the same command runs in bash. It is resumable: re-run it after any
+interruption and finished steps are skipped. The nine steps it performs, in order:
+`prepare-data`, `audit-retrieval`, `audit-training-icl`, `train-federated` (8 rounds,
+k=0), `evaluate-f0-validation` (rounds 4/6/8), `select-round`, `train-federated-icl`
+(R rounds, five frozen exemplars per training prompt), `evaluate-arms`, `report`.
+Local, matched Local, Centralized and the prior-based arms are not trained or
+evaluated; `--arms` keeps only the steps the listed arms depend on.
+
+Watch progress with `outputs/a5000-medmcqa-train-icl-pilot/pipeline_state.yaml`
+and the running table `arms_comparison.md` in the same directory. The final
+paired contrasts (F0−F1, F0−FT0, F1−FT1, FT0−FT1, Holm-corrected over these four)
+land in `reports/medmcqa/contrasts-F0-F1-FT0-FT1.json`, marked `"partial": true`.
+`contrasts.json` is untouched, so the full 17-arm pipeline can later run in the
+same output directory without re-training the federated families.
+
+Rough A5000 budget with the pilot's 25k-question training subsample: about 11 h
+for k=0 federated training, 20 h for k=5, and 4 h of evaluation. One seed collapses
+the hierarchical bootstrap to an item bootstrap, so read the pilot for direction,
+not as the reported result; the three-seed study is
+[`configs/a5000-medmcqa-train-icl.yaml`](configs/a5000-medmcqa-train-icl.yaml)
+(see [train/eval ICL arms](docs/train-eval-icl-arms.md)).
+
+`--arms` works with any subset of the arms a config enables and with any config,
+e.g. `--arms F1 FP` also builds the leave-one-client-out prior, and `--arms LM0`
+trains matched Local at the validation-selected round.
+
 For the new **MedMCQA controlled study** (native subjects, Local matched to FL,
 separate diversity/prior arms and shuffled-prior placebo), use
 [`configs/a5000-medmcqa-controls.yaml`](configs/a5000-medmcqa-controls.yaml).

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import random
 import shutil
@@ -9,8 +10,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fedicl_mqa.core.io import atomic_write_text, file_sha256, read_json, write_json
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -74,7 +78,7 @@ class CheckpointManager:
         self._validate_name(name)
         destination = self.root / name
         if destination.exists():
-            raise FileExistsError(f"checkpoint already exists: {destination}")
+            self._archive_invalid(destination)
         temporary = Path(tempfile.mkdtemp(prefix=".checkpoint-", dir=self.root))
         try:
             adapter_dir = temporary / "adapter"
@@ -112,6 +116,28 @@ class CheckpointManager:
             atomic_write_text(self.root / "best_checkpoint.txt", f"{name}\n")
         self._prune(protected={name, self._read_pointer("best_checkpoint.txt")})
         return destination
+
+    def _archive_invalid(self, destination: Path) -> None:
+        """Preserve unusable checkpoints that auto-resume skipped before re-saving."""
+        # A valid checkpoint may belong to a different run or a later point in this
+        # run. Never silently overwrite it or skip saving the current model state.
+        if not destination.is_dir() or destination.is_symlink():
+            raise FileExistsError(f"checkpoint path already exists: {destination}")
+        try:
+            self.verify(destination)
+            read_json(destination / "state.json")
+        except (FileNotFoundError, ValueError) as exc:
+            archive_root = self.root / ".invalid-checkpoints"
+            archive_root.mkdir(exist_ok=True)
+            archived = archive_root / f"{destination.name}-{uuid4().hex}"
+            os.replace(destination, archived)
+            logger.warning("Archived invalid checkpoint %s to %s: %s", destination, archived, exc)
+            return
+        raise FileExistsError(
+            f"valid checkpoint already exists: {destination}. Use --resume auto to "
+            "continue from the latest compatible checkpoint, or a separate output "
+            "directory for a new run; check the config and base model identity."
+        )
 
     def load(
         self,
@@ -202,7 +228,10 @@ class CheckpointManager:
             try:
                 self.verify(candidate)
                 state = read_json(candidate / "state.json")
-            except (FileNotFoundError, ValueError):
+            except (FileNotFoundError, ValueError) as exc:
+                logger.warning(
+                    "Skipping invalid checkpoint %s during auto-resume: %s", candidate, exc
+                )
                 continue
             if (
                 state.get("format_version") == self.FORMAT_VERSION

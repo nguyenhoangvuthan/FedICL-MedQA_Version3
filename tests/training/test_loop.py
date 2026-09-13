@@ -264,6 +264,61 @@ class ResumeIntegrationTests(unittest.TestCase):
         )
         return ModelBundle(model, _Tokenizer(), torch.device("cpu"))
 
+    def test_resume_past_a_corrupt_future_checkpoint_matches_uninterrupted_training(self):
+        import torch
+        from peft import get_peft_model_state_dict
+
+        config = _config()
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary,
+                config_hash=config.hash,
+                model_id=config.model.id,
+                model_revision=config.model.revision,
+            )
+            full = self._bundle()
+            full_state, _ = loop.train(
+                full,
+                _examples(),
+                config,
+                seed=42,
+                epochs=1,
+                kind="local-client-1",
+                checkpoint_manager=manager,
+            )
+            # Keep step 1 valid, but make every later checkpoint unusable. Auto-resume
+            # must replay the final batch and save both colliding names successfully.
+            for checkpoint in manager.root.glob("checkpoint-*"):
+                if checkpoint.name != "checkpoint-step-00000001":
+                    (checkpoint / "adapter" / "adapter_model.safetensors").write_bytes(b"damaged")
+            resumed = self._bundle()
+            resumed_state, _ = loop.train(
+                resumed,
+                _examples(),
+                config,
+                seed=42,
+                epochs=1,
+                kind="local-client-1",
+                checkpoint_manager=manager,
+                resume="auto",
+            )
+            torch.testing.assert_close(
+                get_peft_model_state_dict(resumed.model),
+                get_peft_model_state_dict(full.model),
+                rtol=0,
+                atol=0,
+            )
+            self.assertEqual(resumed_state.global_step, full_state.global_step)
+            self.assertEqual(resumed_state.target_exposures, full_state.target_exposures)
+            self.assertEqual(resumed_state.epoch, full_state.epoch)
+            manager.verify(manager.latest())
+            archives = list((manager.root / ".invalid-checkpoints").iterdir())
+            self.assertEqual(len(archives), 2)
+            for archived in archives:
+                self.assertEqual(
+                    (archived / "adapter" / "adapter_model.safetensors").read_bytes(), b"damaged"
+                )
+
     def test_mid_epoch_resume_matches_uninterrupted_adapter_optimizer_and_counters(self):
         import torch
         from peft import get_peft_model_state_dict

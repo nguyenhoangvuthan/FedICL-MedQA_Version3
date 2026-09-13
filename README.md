@@ -336,6 +336,23 @@ outputs/a5000/training/<dataset>/
 Each checkpoint has SHA-256 hashes and the exact config hash, base model ID and immutable revision.
 A checkpoint is rejected if any artifact or configuration differs.
 
+Auto-resume logs and skips incomplete or hash-invalid checkpoints, then resumes the latest
+compatible valid checkpoint. If training reaches the same checkpoint name again, the invalid
+directory is moved intact into `.invalid-checkpoints/<name>-<unique-id>` under the checkpoint
+root before saving a replacement. These archives are excluded from checkpoint selection and
+retention pruning. Valid checkpoints, including those from a different configuration, are
+never overwritten; use the original sealed config to resume or a separate output directory
+for a new run.
+
+After a `checkpoint already exists` failure in the MedMCQA controls pipeline, rerun with
+the updated code and the existing sealed config (PowerShell):
+
+```powershell
+uv run --no-sync fedicl-mqa pipeline --config outputs/a5000-medmcqa-controls/sealed_config.json
+```
+
+The pipeline automatically resumes training. Retain your original `--gpu` option if used.
+
 ### Recovering from a Windows CUDA abort
 
 If training ends with `Unhandled exception caught in c10/util/AbortHandler.h` and a

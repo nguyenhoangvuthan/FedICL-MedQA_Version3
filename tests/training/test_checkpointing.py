@@ -49,6 +49,82 @@ class _FakeModel:
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_invalid_collision_is_archived_and_replaced_with_a_verified_checkpoint(self) -> None:
+        for damage in ("missing-manifest", "bad-hash", "missing-state"):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as temporary:
+                manager = CheckpointManager(
+                    temporary, config_hash="config", model_id="model", model_revision="revision"
+                )
+                name = "checkpoint-step-00001000"
+                with patch("fedicl_mqa.training.checkpointing._torch", return_value=_FakeTorch):
+                    checkpoint = manager.save(
+                        name,
+                        model=_FakeModel(),
+                        optimizer=None,
+                        trainer_state=TrainerState(kind="local", seed=42, global_step=1000),
+                    )
+                    if damage == "missing-manifest":
+                        (checkpoint / "hashes.json").unlink()
+                    elif damage == "bad-hash":
+                        (checkpoint / "adapter" / "adapter_model.safetensors").write_bytes(b"bad")
+                    else:
+                        (checkpoint / "state.json").unlink()
+                    original = {
+                        str(p.relative_to(checkpoint)): p.read_bytes()
+                        for p in checkpoint.rglob("*")
+                        if p.is_file()
+                    }
+                    self.assertIsNone(manager.latest())
+                    manager.save(
+                        name,
+                        model=_FakeModel(),
+                        optimizer=None,
+                        trainer_state=TrainerState(kind="local", seed=42, global_step=1000),
+                    )
+                manager.verify(checkpoint)
+                self.assertEqual(manager.latest(), checkpoint)
+                archives = list((manager.root / ".invalid-checkpoints").iterdir())
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(
+                    original,
+                    {
+                        str(p.relative_to(archives[0])): p.read_bytes()
+                        for p in archives[0].rglob("*")
+                        if p.is_file()
+                    },
+                )
+
+    def test_valid_collision_is_preserved_even_for_an_incompatible_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary, config_hash="config", model_id="model", model_revision="revision"
+            )
+            with patch("fedicl_mqa.training.checkpointing._torch", return_value=_FakeTorch):
+                checkpoint = manager.save(
+                    "checkpoint-step-00001000",
+                    model=_FakeModel(),
+                    optimizer=None,
+                    trainer_state=TrainerState(kind="local", seed=42, global_step=1000),
+                )
+                original = (checkpoint / "state.json").read_bytes()
+                for config_hash in ("config", "different-config"):
+                    other = CheckpointManager(
+                        temporary,
+                        config_hash=config_hash,
+                        model_id="model",
+                        model_revision="revision",
+                    )
+                    with self.assertRaisesRegex(FileExistsError, "valid checkpoint.*--resume auto"):
+                        other.save(
+                            checkpoint.name,
+                            model=_FakeModel(),
+                            optimizer=None,
+                            trainer_state=TrainerState(kind="local", seed=42, global_step=1000),
+                        )
+                self.assertEqual((checkpoint / "state.json").read_bytes(), original)
+                manager.verify(checkpoint)
+                self.assertFalse((manager.root / ".invalid-checkpoints").exists())
+
     def test_atomic_checkpoint_pointer_and_hash_verification(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             manager = CheckpointManager(

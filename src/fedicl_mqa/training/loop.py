@@ -4,7 +4,7 @@ import logging
 import math
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from fedicl_mqa.core.config import Config
@@ -95,6 +95,39 @@ logger = logging.getLogger(__name__)
 LOG_EVERY_STEPS = 10
 
 
+def _forward_batch_size(device: Any, configured: int) -> int:
+    # Bound activation/full-vocabulary loss memory before backward can OOM. Keep
+    # DataLoader batches intact: checkpoint batch offsets and optimizer steps refer
+    # to those logical batches, including in historical sealed runs.
+    return 1 if device.type == "cuda" else configured
+
+
+def _training_chunks(
+    batch: dict[str, Any], limit: int
+) -> Iterator[tuple[dict[str, Any], float]]:
+    """Split a host batch, preserving the causal LM's mean over supervised tokens."""
+    rows = batch["input_ids"].shape[0]
+    if rows <= limit:
+        yield batch, 1.0
+        return
+    # Causal LM loss shifts labels by one; prompt/padding labels are ignored.
+    counts = (batch["labels"][:, 1:] != -100).sum(dim=1)
+    total = int(counts.sum().item())
+    if total == 0:
+        raise ValueError("training batch has no supervised next-token targets")
+    for start in range(0, rows, limit):
+        stop = start + limit
+        count = int(counts[start:stop].sum().item())
+        if count == 0:
+            continue
+        chunk = {key: value[start:stop] for key, value in batch.items()}
+        # AnswerCollator right-pads. Remove padding introduced by other chunks;
+        # preserve every prompt and completion token and the multiple-of-eight pad.
+        length = int(chunk["attention_mask"].sum(dim=1).max().item())
+        width = math.ceil(length / 8) * 8
+        yield {key: value[:, :width] for key, value in chunk.items()}, count / total
+
+
 def _synchronize_before_release(device: Any) -> None:
     """Surface queued CUDA failures before tensor destructors run on Windows."""
     if sys.platform == "win32" and device.type == "cuda":
@@ -138,6 +171,9 @@ def train(
     if not examples:
         raise ValueError("training data cannot be empty")
     model, tokenizer = bundle.model, bundle.tokenizer
+    forward_batch_size = _forward_batch_size(
+        bundle.device, config.training.train_micro_batch_size
+    )
     tokenizer.padding_side = "right"
     dataset = AnswerOnlyDataset(examples, tokenizer, config.model.max_seq_length, exemplars)
     context_hash = (
@@ -148,6 +184,7 @@ def train(
         else None
     )
     context_extra = {"training_context_sha256": context_hash} if context_hash else {}
+    context_extra["forward_micro_batch_size"] = forward_batch_size
     optimizer = create_optimizer(model, config)
     state = initial_state or TrainerState(kind=kind, seed=seed)
     if checkpoint_manager and resume:
@@ -187,6 +224,15 @@ def train(
         epochs,
         state.batch_in_epoch,
     )
+    if forward_batch_size < config.training.train_micro_batch_size:
+        logger.info(
+            "%s: CUDA memory guard: forward/backward batch %d, logical batch %d, "
+            "gradient accumulation %d; optimizer/checkpoint boundaries unchanged",
+            kind,
+            forward_batch_size,
+            config.training.train_micro_batch_size,
+            config.training.gradient_accumulation_steps,
+        )
     for epoch in range(state.epoch, epochs):
         epoch_started = time.perf_counter()
         generator = torch.Generator()
@@ -220,20 +266,24 @@ def train(
             batch_shape = tuple(batch["input_ids"].shape)
             phase = "batch transfer"
             try:
-                batch = {
-                    key: value.to(bundle.device, non_blocking=True) for key, value in batch.items()
-                }
-                phase = "forward"
-                loss = model(**batch).loss / group_size
-                loss_value = float(loss.detach().item() * group_size)
-                if not math.isfinite(loss_value):
-                    raise RuntimeError(f"non-finite training loss: {loss_value}")
-                phase = "backward"
-                loss.backward()
-                _synchronize_before_release(bundle.device)
-                # Logging/checkpoint metadata must not keep an autograd graph alive
-                # until the next forward pass (or the end of the epoch).
-                del loss
+                loss_value = 0.0
+                for host_chunk, weight in _training_chunks(batch, forward_batch_size):
+                    phase = "batch transfer"
+                    chunk = {
+                        key: value.to(bundle.device, non_blocking=True)
+                        for key, value in host_chunk.items()
+                    }
+                    phase = "forward"
+                    loss = model(**chunk).loss * (weight / group_size)
+                    chunk_loss = float(loss.detach().item() * group_size)
+                    if not math.isfinite(chunk_loss):
+                        raise RuntimeError(f"non-finite training loss: {chunk_loss}")
+                    loss_value += chunk_loss
+                    phase = "backward"
+                    loss.backward()
+                    _synchronize_before_release(bundle.device)
+                    # No graph or device inputs survive into the next forward.
+                    del loss, chunk
                 if should_step:
                     phase = "optimizer step"
                     torch.nn.utils.clip_grad_norm_(
@@ -334,6 +384,7 @@ def train(
         "effective_batch_size": float(
             config.training.train_micro_batch_size * config.training.gradient_accumulation_steps
         ),
+        "forward_micro_batch_size": float(forward_batch_size),
         "training_exemplars_per_target": 5 if exemplars is not None else 0,
         **gpu_telemetry(),
     }

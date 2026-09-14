@@ -53,6 +53,12 @@ def _examples() -> list[MCQExample]:
 
 @unittest.skipUnless(importlib.util.find_spec("torch"), "requires PyTorch")
 class TrainingLoopTests(unittest.TestCase):
+    def test_cuda_forward_limit_does_not_change_cpu_batch_size(self):
+        import torch
+
+        self.assertEqual(loop._forward_batch_size(torch.device("cuda:1"), 8), 1)
+        self.assertEqual(loop._forward_batch_size(torch.device("cpu"), 8), 8)
+
     def _model(self):
         import torch
 
@@ -152,6 +158,47 @@ class TrainingLoopTests(unittest.TestCase):
             self.assertEqual((state.global_step, state.target_exposures), (0, 0))
             self.assertIn("during forward at epoch 1/1 batch 1/3", messages.output[0])
             self.assertIn("input shape (2, 8)", messages.output[0])
+
+    def test_failure_after_first_chunk_cannot_step_or_checkpoint_partial_gradients(self):
+        import torch
+
+        model, _ = self._model()
+        initial_weight = model.weight.detach().clone()
+        state = TrainerState(kind="federated-client-1", seed=42)
+        calls = 0
+
+        def fail_second_backward(gradient):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("CUDA out of memory")
+            return gradient
+
+        model.weight.register_hook(fail_second_backward)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary, config_hash="c", model_id="m", model_revision="r"
+            )
+            with (
+                patch.object(loop, "_forward_batch_size", return_value=1),
+                self.assertLogs(loop.logger, level="ERROR") as messages,
+                self.assertRaisesRegex(RuntimeError, "CUDA out of memory"),
+            ):
+                loop.train(
+                    ModelBundle(model, _Tokenizer(), torch.device("cpu")),
+                    _examples(),
+                    _config(),
+                    seed=42,
+                    epochs=1,
+                    kind=state.kind,
+                    checkpoint_manager=manager,
+                    initial_state=state,
+                )
+            self.assertIsNone(manager.latest())
+            self.assertIn("during backward", messages.output[0])
+            self.assertEqual((state.global_step, state.target_exposures), (0, 0))
+            torch.testing.assert_close(model.weight, initial_weight, rtol=0, atol=0)
 
     def test_nonfinite_loss_cannot_update_weights_or_save_a_checkpoint(self):
         import torch
@@ -263,6 +310,92 @@ class ResumeIntegrationTests(unittest.TestCase):
             ),
         )
         return ModelBundle(model, _Tokenizer(), torch.device("cpu"))
+
+    def test_split_loss_and_gradients_match_qwen_with_unequal_answer_lengths(self):
+        import torch
+
+        model = self._bundle().model
+        model.eval()  # Disable dropout to compare the mathematical objective.
+        batch = loop.AnswerCollator(_Tokenizer())(
+            [
+                {"input_ids": [1] * 9 + [4], "attention_mask": [1] * 10,
+                 "labels": [-100] * 9 + [4]},
+                {"input_ids": [1, 2, 3, 4, 5], "attention_mask": [1] * 5,
+                 "labels": [-100, -100, 3, 4, 5]},
+                {"input_ids": [1, 2, 3], "attention_mask": [1] * 3,
+                 "labels": [-100, 2, 3]},
+            ]
+        )
+        reference = model(**batch).loss
+        reference.backward()
+        gradients = {
+            name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None
+        }
+        expected_loss = reference.item()
+        del reference
+        for limit in (1, 2):  # Also exercise an uneven final chunk.
+            with self.subTest(limit=limit):
+                model.zero_grad(set_to_none=True)
+                actual_loss = 0.0
+                chunks = list(loop._training_chunks(batch, limit))
+                self.assertEqual(sum(chunk["input_ids"].shape[0] for chunk, _ in chunks), 3)
+                self.assertEqual(chunks[-1][0]["input_ids"].shape[1], 8)
+                for chunk, weight in chunks:
+                    loss = model(**chunk).loss * weight
+                    actual_loss += loss.item()
+                    loss.backward()
+                    del loss
+                self.assertAlmostEqual(actual_loss, expected_loss, places=6)
+                for name, p in model.named_parameters():
+                    if name in gradients:
+                        torch.testing.assert_close(p.grad, gradients[name], rtol=1e-5, atol=1e-7)
+
+    def test_split_mid_epoch_resume_matches_uninterrupted_training(self):
+        with patch.object(loop, "_forward_batch_size", return_value=1):
+            self.test_mid_epoch_resume_matches_uninterrupted_adapter_optimizer_and_counters()
+
+    def test_resume_unsplit_checkpoint_with_memory_guard_and_unchanged_config(self):
+        import torch
+
+        from fedicl_mqa.core.io import file_sha256
+
+        config = _config()
+        original_hash = config.hash
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary, config_hash=config.hash,
+                model_id=config.model.id, model_revision=config.model.revision,
+            )
+            save = manager.save
+
+            def stop_after_commit(*args, **kwargs):
+                # Emulate a historical checkpoint without the new runtime metadata.
+                kwargs["extra"].pop("forward_micro_batch_size", None)
+                save(*args, **kwargs)
+                raise RuntimeError("simulated interruption")
+
+            with (
+                patch.object(manager, "save", side_effect=stop_after_commit),
+                self.assertRaisesRegex(RuntimeError, "simulated interruption"),
+            ):
+                loop.train(
+                    self._bundle(), _examples(), config, seed=42, epochs=2,
+                    kind="centralized", checkpoint_manager=manager,
+                )
+            original = manager.latest()
+            hashes = {p: file_sha256(p) for p in original.rglob("*") if p.is_file()}
+            with patch.object(loop, "_forward_batch_size", return_value=1):
+                state, telemetry = loop.train(
+                    self._bundle(), _examples(), config, seed=42, epochs=2,
+                    kind="centralized", checkpoint_manager=manager, resume="auto",
+                )
+            self.assertEqual(config.hash, original_hash)
+            self.assertEqual((state.global_step, state.target_exposures, state.epoch), (4, 10, 2))
+            self.assertEqual(telemetry["forward_micro_batch_size"], 1)
+            self.assertEqual(telemetry["effective_batch_size"], 4)
+            self.assertEqual(hashes, {p: file_sha256(p) for p in hashes})
+            optimizer_state = torch.load(manager.latest() / "optimizer.pt", weights_only=True)
+            self.assertEqual(optimizer_state["state"][0]["step"], 4)
 
     def test_resume_past_a_corrupt_future_checkpoint_matches_uninterrupted_training(self):
         import torch

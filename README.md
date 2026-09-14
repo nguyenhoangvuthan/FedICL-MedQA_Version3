@@ -396,6 +396,36 @@ uv run --no-sync fedicl-mqa pipeline --config outputs/a5000-medmcqa-controls/sea
 
 The pipeline automatically resumes training. Retain your original `--gpu` option if used.
 
+### Recovering from CUDA out of memory during training
+
+If the traceback explicitly reports `CUDA error: out of memory` during backward
+(for example, input shape `(8, 1096)`), restart with the updated training loop.
+On CUDA, it now runs forward/backward on one example at a time, trimming only extra
+right padding. Each chunk's loss is weighted by its supervised next-token count;
+the original logical batches, gradient accumulation, optimizer steps, and checkpoint
+batch offsets stay intact. This reduces peak activation/logit memory without changing
+the sealed config or discarding any training examples or prompt tokens.
+
+The runtime chunk size is recorded as `forward_micro_batch_size` in new training
+telemetry and Local/Centralized checkpoint metadata. Splitting can reduce throughput
+and changes dropout draws and floating-point reduction order, so continuation is
+compatible with old checkpoints but is not bitwise identical to an unsplit run.
+CPU regression tests cover the loss/gradient equivalence with dropout disabled and
+checkpoint resume with dropout enabled; Windows/A5000 memory usage requires a live rerun.
+
+In a fresh PowerShell process, resume federated training with your original config
+path and GPU selection (this example uses `outputs/a5000`):
+
+```powershell
+uv run --no-sync fedicl-mqa train --config outputs/a5000/sealed_config.json --mode federated --all-seeds --resume auto
+```
+
+FL reuses completed client updates and restarts the unfinished client from the round's
+global adapter; the last printed client step is not a saved mid-client checkpoint.
+If you were running `pipeline`, rerun that original command instead to retain its
+requested arms and remaining stages. Do not edit the sealed batch size to recover.
+`--cuda-debug` helps locate failures but does not reduce memory consumption.
+
 ### Recovering from a Windows CUDA abort
 
 If training ends with `Unhandled exception caught in c10/util/AbortHandler.h` and a

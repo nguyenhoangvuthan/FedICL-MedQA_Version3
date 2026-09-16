@@ -27,8 +27,9 @@ evaluated; `--arms` keeps only the steps the listed arms depend on.
 
 Watch progress with `outputs/a5000-medmcqa-train-icl-pilot/pipeline_state.yaml`
 and the running table `arms_comparison.md` in the same directory. The final
-paired contrasts (F0−F1, F0−FT0, F1−FT1, FT0−FT1, Holm-corrected over these four)
-land in `reports/medmcqa/contrasts-F0-F1-FT0-FT1.json`, marked `"partial": true`.
+paired contrasts (F0−F1, F0−FT0, F1−FT1, FT0−FT1, F0−FT1, Holm-corrected over these five)
+land in `reports/medmcqa/contrasts-F0-F1-FT0-FT1.json`, marked `"partial": true`,
+together with F0−FT1 (the full train+eval exemplar system against plain FL).
 `contrasts.json` is untouched, so the full 17-arm pipeline can later run in the
 same output directory without re-training the federated families.
 
@@ -38,6 +39,17 @@ the hierarchical bootstrap to an item bootstrap, so read the pilot for direction
 not as the reported result; the three-seed study is
 [`configs/a5000-medmcqa-train-icl.yaml`](configs/a5000-medmcqa-train-icl.yaml)
 (see [train/eval ICL arms](docs/train-eval-icl-arms.md)).
+
+To add the same 2 x 2 for **Centralized** training (C0, C1, CT0, CT1: the pooled
+data trained for R epochs, with and without exemplars, evaluated with and without
+exemplars), run the pipeline again in the same output directory with all eight
+arms. Finished federated work is reused; only the two Centralized families train
+(roughly 11 h at k=0 and 20 h at k=5 on the pilot subsample) and the report then
+also carries the Centralized contrasts and the FL-versus-Centralized cells:
+
+```powershell
+uv run --no-sync fedicl-mqa pipeline --config configs/a5000-medmcqa-train-icl-pilot.yaml --gpu 1 --arms F0 F1 FT0 FT1 C0 C1 CT0 CT1
+```
 
 `--arms` works with any subset of the arms a config enables and with any config,
 e.g. `--arms F1 FP` also builds the leave-one-client-out prior, and `--arms LM0`

@@ -115,8 +115,8 @@ def _load_arm_checkpoint(
             ):
                 raise ValueError("federated checkpoint does not match the selected training budget")
         return bundle, None
-    root = checkpoint_root(config, "centralized") / f"seed-{seed}"
-    bind_protocol(config, root, plan, train_icl=False)
+    root = checkpoint_root(config, spec.checkpoint_family) / f"seed-{seed}"
+    bind_protocol(config, root, plan, train_icl=spec.checkpoint_family == "centralized-icl")
     loaded = manager(root, keep=config.training.checkpoint_keep).load(
         "last", model=bundle.model, restore_rng=False
     )

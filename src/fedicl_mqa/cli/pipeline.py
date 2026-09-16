@@ -54,7 +54,13 @@ def _namespace(config_path: str | Path, **fields: Any) -> argparse.Namespace:
 
 # Checkpoint families that resolve "the selected round" and so need F0 trained,
 # evaluated on validation and selected before they can start.
-_NEEDS_SELECTED_ROUND = {"federated", "federated-icl", "local-matched", "centralized"}
+_NEEDS_SELECTED_ROUND = {
+    "federated",
+    "federated-icl",
+    "local-matched",
+    "centralized",
+    "centralized-icl",
+}
 
 
 def build_steps(
@@ -321,6 +327,11 @@ def build_steps(
         *(
             [Step("train-federated-icl", train("federated-icl"), lambda: False)]
             if config.icl_training is not None and family("federated-icl")
+            else []
+        ),
+        *(
+            [Step("train-centralized-icl", train("centralized-icl"), lambda: False)]
+            if config.icl_training is not None and family("centralized-icl")
             else []
         ),
         *(

@@ -83,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
             "centralized",
             "local-icl",
             "federated-icl",
+            "centralized-icl",
         ],
         required=True,
     )

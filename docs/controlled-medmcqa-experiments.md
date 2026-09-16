@@ -6,7 +6,8 @@ and F2 changed both diversity and prior relative to F1.
 
 For the opt-in extension that also fine-tunes with exemplars, see
 [train/eval ICL arms](train-eval-icl-arms.md). The 13-arm protocol below continues
-to use k=0 training; the extension adds LT0/LT1 and FT0/FT1 in a separate run.
+to use k=0 training; the extension adds LT0/LT1, FT0/FT1 and C1/CT0/CT1 in a
+separate run.
 
 The implementation is opt-in through `controls` in
 `configs/a5000-medmcqa-controls.yaml`. Historical configurations omit this section;

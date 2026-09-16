@@ -176,6 +176,108 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(federated.call_args.kwargs["rounds"], 6)
         self.assertEqual(set(federated.call_args.kwargs["client_exemplars"]), set(range(5)))
 
+    def test_centralized_icl_pools_every_client_plan_at_the_selected_round(self):
+        self.prepare()
+        with (
+            patch.object(training, "seal_config", return_value=self.config),
+            patch.object(training, "load_partition", return_value=self.parts),
+            patch.object(training, "train_centralized", return_value={}) as central,
+        ):
+            for mode in ("centralized", "centralized-icl"):
+                training.command_train(
+                    argparse.Namespace(
+                        config="unused",
+                        mode=mode,
+                        seed=42,
+                        all_seeds=False,
+                        fl_round=None,
+                        resume="auto",
+                    )
+                )
+        normal, icl = central.call_args_list
+        self.assertEqual(normal.args[1], icl.args[1])
+        self.assertEqual(normal.kwargs["fl_rounds"], 6)
+        self.assertEqual(icl.kwargs["fl_rounds"], 6)
+        self.assertNotIn("client_exemplars", normal.kwargs)
+        self.assertEqual(set(icl.kwargs["client_exemplars"]), set(range(5)))
+        self.assertNotEqual(normal.kwargs["output_root"], icl.kwargs["output_root"])
+        self.assertIn("centralized-icl", Path(icl.kwargs["output_root"]).parts)
+        protocol = read_json(
+            paths.checkpoint_root(self.config, "centralized-icl")
+            / "seed-42"
+            / "training_protocol.json"
+        )
+        self.assertEqual(protocol["train_k"], 5)
+
+    def test_train_centralized_pools_targets_and_their_own_client_exemplars(self):
+        from fedicl_mqa.training import workflows
+
+        self.prepare()
+        fit, exemplars, _ = context.training_inputs(self.config, self.parts)
+        seen = {}
+
+        def fake_train(bundle, examples, config, **kwargs):
+            seen["ids"] = [q.example_id for q in examples]
+            seen["exemplars"] = kwargs.get("exemplars")
+            seen["kind"] = kwargs["kind"]
+            return None, {}
+
+        with (
+            patch.object(workflows, "load_lora_bundle", return_value=SimpleNamespace()),
+            patch.object(workflows, "train", side_effect=fake_train),
+        ):
+            workflows.train_centralized(
+                self.config,
+                fit,
+                seed=42,
+                fl_rounds=6,
+                output_root=self.tmp.name,
+                client_exemplars=exemplars,
+            )
+        self.assertEqual(seen["ids"], [f"q{c}" for c in range(5)])
+        self.assertEqual(set(seen["exemplars"]), set(seen["ids"]))
+        self.assertEqual(seen["kind"], "centralized-icl")
+        for c in range(5):
+            self.assertEqual(seen["exemplars"][f"q{c}"], exemplars[c][f"q{c}"])
+
+    def test_centralized_pair_loads_the_icl_checkpoint_and_checks_its_budget(self):
+        self.prepare()
+        context.bind_protocol(
+            self.config,
+            paths.checkpoint_root(self.config, "centralized-icl") / "seed-42",
+            context.load_plan(self.config),
+            train_icl=True,
+            create=True,
+        )
+        roots = []
+
+        def manager(root, exposures=30, **kwargs):
+            roots.append(Path(root))
+            state = TrainerState(
+                kind="test", seed=42, epoch=6, target_exposures=exposures, round_index=6
+            )
+            return SimpleNamespace(load=lambda *a, **k: SimpleNamespace(trainer_state=state))
+
+        with (
+            patch.object(evaluation, "load_partition", return_value=self.parts),
+            patch.object(
+                evaluation, "load_lora_bundle", return_value=SimpleNamespace(model=object())
+            ),
+            patch.object(evaluation, "adapter_state", return_value={}),
+            patch.object(evaluation, "CheckpointManager", side_effect=manager),
+        ):
+            for arm in ("CT0", "CT1"):
+                evaluation._load_arm_checkpoint(self.config, arm, 42, None)
+            with (
+                patch.object(
+                    evaluation, "CheckpointManager", side_effect=lambda r, **k: manager(r, 29)
+                ),
+                self.assertRaisesRegex(ValueError, "centralized checkpoint"),
+            ):
+                evaluation._load_arm_checkpoint(self.config, "CT1", 42, None)
+        self.assertEqual(roots[0], roots[1])
+        self.assertIn("centralized-icl", roots[0].parts)
+
     def test_eval_pairs_load_same_new_checkpoint_and_check_common_fit_budget(self):
         self.prepare()
         for family in ("local-icl", "federated-icl"):
@@ -218,11 +320,13 @@ class ContextTests(unittest.TestCase):
             self.assertIn(ARMS[arms[0]].checkpoint_family, roots[0].parts)
 
     def test_opt_in_arms_and_pipeline_dependencies(self):
-        self.assertEqual(len(active_arms(self.config)), 17)
+        self.assertEqual(len(active_arms(self.config)), 20)
         names = [s.name for s in pipeline.build_steps(self.config, split="test", force=False)]
         self.assertLess(names.index("audit-training-icl"), names.index("train-local"))
         self.assertLess(names.index("select-round"), names.index("train-federated-icl"))
         self.assertLess(names.index("train-federated-icl"), names.index("evaluate-all"))
+        self.assertLess(names.index("select-round"), names.index("train-centralized-icl"))
+        self.assertLess(names.index("train-centralized-icl"), names.index("evaluate-all"))
         config = Config.from_file("configs/a5000-medmcqa-train-icl.yaml")
         self.assertIsNotNone(config.icl_training)
         self.assertNotIn("icl_training", Config().to_dict())

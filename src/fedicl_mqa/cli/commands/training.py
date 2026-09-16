@@ -42,10 +42,14 @@ def _requested_seeds(config: Config, args: argparse.Namespace) -> list[int]:
 
 def command_train(args: argparse.Namespace) -> None:
     config = seal_config(args.config)
-    if args.fl_round is not None and args.mode not in {"centralized", "local-matched"}:
+    if args.fl_round is not None and args.mode not in {
+        "centralized",
+        "centralized-icl",
+        "local-matched",
+    }:
         raise ValueError("--fl-round is only valid for centralized or local-matched training")
     clients = load_partition(data_root(config), expected_config_hash=config.hash)
-    train_icl = args.mode in {"local-icl", "federated-icl"}
+    train_icl = args.mode in {"local-icl", "federated-icl", "centralized-icl"}
     if train_icl and config.icl_training is None:
         raise ValueError("ICL training modes require icl_training in a fresh configuration")
     client_fit, client_exemplars, plan = training_inputs(config, clients)
@@ -112,8 +116,9 @@ def command_train(args: argparse.Namespace) -> None:
                 client_fit,
                 seed=seed,
                 fl_rounds=fl_round,
-                output_root=checkpoint_root(config, "centralized"),
+                output_root=telemetry_root,
                 resume=args.resume,
+                **({"client_exemplars": client_exemplars} if train_icl else {}),
             )
         write_json(
             telemetry_root / f"seed-{seed}" / "telemetry.json",

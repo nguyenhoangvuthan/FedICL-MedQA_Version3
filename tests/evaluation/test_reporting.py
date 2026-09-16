@@ -72,11 +72,45 @@ class ControlledReportingTests(unittest.TestCase):
             controlled=True,
             train_icl=True,
         )
-        self.assertEqual(len(report["primary"]), 16)
+        self.assertEqual(len(report["primary"]), 22)
         for name in TRAIN_ICL_CONTRASTS:
             self.assertIn("holm_adjusted_p_value", report["primary"][name])
         self.assertEqual(report["primary"]["local_train_icl_eval_k0"]["effect"], 1)
         self.assertEqual(report["primary"]["fl_eval_icl_after_train_icl"]["effect"], 0)
+
+    def test_centralized_factorial_mirrors_the_federated_one(self):
+        from fedicl_mqa.evaluation.arms import ARMS
+        from fedicl_mqa.evaluation.reporting import TRAIN_ICL_CONTRASTS
+
+        self.assertEqual(TRAIN_ICL_CONTRASTS["central_icl"], ("C0", "C1"))
+        self.assertEqual(TRAIN_ICL_CONTRASTS["central_train_icl_eval_k0"], ("C0", "CT0"))
+        self.assertEqual(TRAIN_ICL_CONTRASTS["central_train_icl_eval_k5"], ("C1", "CT1"))
+        self.assertEqual(TRAIN_ICL_CONTRASTS["central_eval_icl_after_train_icl"], ("CT0", "CT1"))
+        self.assertEqual(TRAIN_ICL_CONTRASTS["fl_system"], ("F0", "FT1"))
+        self.assertEqual(TRAIN_ICL_CONTRASTS["central_system"], ("C0", "CT1"))
+        predictions = {
+            arm: {
+                seed: values(correct=arm in {"CT1", "FT1"}, likelihood_correct=True, seed=seed)
+                for seed in ([None] if spec.checkpoint_family == "base" else [42])
+            }
+            for arm, spec in ARMS.items()
+        }
+        report = build_contrast_report(
+            predictions,
+            samples=20,
+            confidence=0.95,
+            bootstrap_seed=1,
+            controlled=True,
+            train_icl=True,
+        )
+        self.assertEqual(report["primary"]["central_system"]["effect"], 1)
+        self.assertEqual(report["primary"]["fl_system"]["effect"], 1)
+        # Federated versus Centralized is descriptive in every cell, as C0-F0 already was.
+        self.assertEqual(
+            set(report["descriptive"]),
+            {"central", "central_eval_icl", "central_train_icl", "central_train_eval_icl"},
+        )
+        self.assertEqual(report["descriptive"]["central_train_eval_icl"]["effect"], 0)
 
     def test_full_controls_produce_separate_prior_diversity_and_matched_contrasts(self):
         from fedicl_mqa.evaluation.arms import ARMS
@@ -126,6 +160,7 @@ class ControlledReportingTests(unittest.TestCase):
                 "fl_train_icl_eval_k0",
                 "fl_train_icl_eval_k5",
                 "fl_eval_icl_after_train_icl",
+                "fl_system",
             },
         )
         self.assertTrue(set(report["primary"]) < set(TRAIN_ICL_CONTRASTS) | {"fl_icl"})
@@ -169,7 +204,7 @@ class ControlledReportingTests(unittest.TestCase):
             train_icl=True,
         )
         self.assertFalse(report["partial"])
-        self.assertEqual(len(report["primary"]), 16)
+        self.assertEqual(len(report["primary"]), 22)
 
     def test_pairing_rejects_changed_gold_labels(self):
         from dataclasses import replace

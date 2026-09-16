@@ -111,6 +111,14 @@ class ArmSubsetStepTests(unittest.TestCase):
         self.assertNotIn("train-federated-icl", names)
         self.assertNotIn("train-local", names)
 
+    def test_centralized_factorial_trains_both_centralized_families(self) -> None:
+        names = self.names(["C0", "C1", "CT0", "CT1"])
+        self.assertIn("train-centralized", names)
+        self.assertIn("train-centralized-icl", names)
+        self.assertIn("select-round", names)
+        self.assertNotIn("train-federated-icl", names)
+        self.assertNotIn("train-local", names)
+
     def test_inactive_arm_is_rejected(self) -> None:
         self.config.icl_training = None
         with self.assertRaisesRegex(ValueError, "not enabled"):

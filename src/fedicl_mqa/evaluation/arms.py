@@ -52,9 +52,14 @@ ARMS: dict[str, ArmSpec] = {
     "LT1": ArmSpec("LT1", "local-icl", True),
     "FT0": ArmSpec("FT0", "federated-icl", False),
     "FT1": ArmSpec("FT1", "federated-icl", True),
+    "C1": ArmSpec("C1", "centralized", True),
+    "CT0": ArmSpec("CT0", "centralized-icl", False),
+    "CT1": ArmSpec("CT1", "centralized-icl", True),
 }
 
-TRAIN_ICL_ARMS = ("LT0", "LT1", "FT0", "FT1")
+# Enabled only by icl_training. C1 needs no new checkpoint, but it completes the
+# Centralized train x eval factorial and so belongs to the same opt-in study.
+TRAIN_ICL_ARMS = ("LT0", "LT1", "FT0", "FT1", "C1", "CT0", "CT1")
 LEGACY_ARMS = ("B0", "B1", "C0", "F0", "F1", "F2", "L0", "L1")
 
 

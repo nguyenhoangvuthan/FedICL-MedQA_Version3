@@ -42,6 +42,22 @@ TRAIN_ICL_CONTRASTS = {
     "fl_train_icl_eval_k0": ("F0", "FT0"),
     "fl_train_icl_eval_k5": ("F1", "FT1"),
     "fl_eval_icl_after_train_icl": ("FT0", "FT1"),
+    "central_icl": ("C0", "C1"),
+    "central_train_icl_eval_k0": ("C0", "CT0"),
+    "central_train_icl_eval_k5": ("C1", "CT1"),
+    "central_eval_icl_after_train_icl": ("CT0", "CT1"),
+    # Full train+eval exemplar system against the plain k=0 baseline of its family.
+    "fl_system": ("F0", "FT1"),
+    "central_system": ("C0", "CT1"),
+}
+
+# Federated versus Centralized in each train x eval cell. Descriptive, as C0-F0
+# always was: the two differ in data pooling, not in the intervention under test.
+DESCRIPTIVE_CENTRAL = {
+    "central": ("F0", "C0"),
+    "central_eval_icl": ("F1", "C1"),
+    "central_train_icl": ("FT0", "CT0"),
+    "central_train_eval_icl": ("FT1", "CT1"),
 }
 
 
@@ -118,12 +134,14 @@ def build_contrast_report(
     for name, value in adjusted.items():
         report["primary"][name]["holm_adjusted_p_value"] = value
 
-    if "C0" in arm_predictions and "F0" in arm_predictions:
-        left, right = arm_predictions["F0"], arm_predictions["C0"]
+    for name, (federated, central) in DESCRIPTIVE_CENTRAL.items():
+        if federated not in arm_predictions or central not in arm_predictions:
+            continue
+        left, right = arm_predictions[federated], arm_predictions[central]
         if left.keys() != right.keys():
             raise ValueError("centralized and federated arms must have identical seed coverage")
         seeds = set(left) - {None}
-        report["descriptive"]["central"] = hierarchical_paired_bootstrap(
+        report["descriptive"][name] = hierarchical_paired_bootstrap(
             {seed: left[seed] for seed in seeds},
             {seed: right[seed] for seed in seeds},
             samples=samples,

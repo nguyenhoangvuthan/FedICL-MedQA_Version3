@@ -67,9 +67,21 @@ def train_centralized(
     fl_rounds: int,
     output_root: str | Path,
     resume: str | None = "auto",
+    client_exemplars: Mapping[int, Mapping[str, Sequence[MCQExample]]] | None = None,
 ) -> dict[str, float | str]:
     bundle = load_lora_bundle(config, seed=seed)
     pooled = [example for client in sorted(client_fit) for example in client_fit[client]]
+    # Pooling the data does not pool the demonstrations: each target keeps the five
+    # exemplars frozen from its own client's support, exactly as in Local and FL.
+    exemplars = (
+        {
+            qid: demos
+            for client in sorted(client_exemplars)
+            for qid, demos in client_exemplars[client].items()
+        }
+        if client_exemplars is not None
+        else None
+    )
     manager = CheckpointManager(
         Path(output_root) / f"seed-{seed}",
         config_hash=config.hash,
@@ -83,9 +95,10 @@ def train_centralized(
         config,
         seed=seed,
         epochs=fl_rounds * config.training.local_epochs,
-        kind="centralized",
+        kind="centralized-icl" if exemplars is not None else "centralized",
         checkpoint_manager=manager,
         resume=resume,
+        **({"exemplars": exemplars} if exemplars is not None else {}),
     )
     return telemetry
 

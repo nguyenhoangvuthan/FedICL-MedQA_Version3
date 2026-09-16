@@ -16,5 +16,29 @@ __pycache__/
 .venv*/
 artifacts/
 data/processed/
-outputs/
 wandb/
+
+# Experiment outputs: ignore everything, then allow back only the small result
+# files needed to compare runs. Checkpoints (*.safetensors, *.pt), client data
+# partitions, the multi-MB partition/retrieval/training-context audits and
+# per-item predictions stay local; the sealed config, subject audit, summaries,
+# round selection, priors, comparison tables and contrast reports are tracked so
+# a run can be compared without the 8 GB of adapters behind it.
+outputs/**
+!outputs/**/
+!outputs/**/sealed_config.json
+!outputs/**/pipeline_state.yaml
+!outputs/**/arms_comparison.md
+!outputs/**/arms_comparison.json
+!outputs/**/reports/**/*.json
+!outputs/**/arms/**/summary.json
+!outputs/**/arms/**/run_log.json
+!outputs/**/arms/**/priors/**/*.json
+!outputs/**/data/**/subject_audit.json
+!outputs/**/training/**/selected_round.json
+!outputs/**/training/**/history.json
+!outputs/**/training/**/telemetry.json
+!outputs/**/training/**/protocol.json
+# Per-item predictions (~1 MB per run) are what `report` bootstraps from.
+# Uncomment to version them too:
+# !outputs/**/arms/**/predictions.jsonl

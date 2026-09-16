@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -106,7 +107,7 @@ class CheckpointManager:
                 if path.is_file() and path.name != "hashes.json"
             }
             write_json(temporary / "hashes.json", hashes)
-            os.replace(temporary, destination)
+            _replace_directory(temporary, destination)
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -366,6 +367,39 @@ class CheckpointManager:
         for path in checkpoints:
             if path.name not in keep_names and path.parent.resolve() == self.root.resolve():
                 shutil.rmtree(path)
+
+
+# Windows refuses to rename a directory while another process holds a handle on any
+# file inside it (ERROR_ACCESS_DENIED). Antivirus and the search indexer routinely
+# open a freshly written adapter or optimizer file for a moment, so a single
+# os.replace is not reliable there. Retries span roughly half a minute.
+_REPLACE_ATTEMPTS = 8
+_REPLACE_FIRST_DELAY_SECONDS = 0.5
+
+
+def _replace_directory(source: Path, destination: Path) -> None:
+    delay = _REPLACE_FIRST_DELAY_SECONDS
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if attempt == _REPLACE_ATTEMPTS:
+                raise PermissionError(
+                    f"could not rename {source} to {destination} after {attempt} attempts: "
+                    f"{exc}. Another process is holding a file inside it open; on Windows "
+                    "this is usually antivirus real-time scanning or the search indexer. "
+                    "Exclude the outputs directory and resume with --resume auto."
+                ) from exc
+            logger.warning(
+                "Rename of %s denied (attempt %d/%d); retrying in %.1fs",
+                destination.name,
+                attempt,
+                _REPLACE_ATTEMPTS,
+                delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 8.0)
 
 
 def _torch() -> Any:

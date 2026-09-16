@@ -200,6 +200,71 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(manager.resolve("last"), second)
 
 
+class WindowsRenameRetryTests(unittest.TestCase):
+    """A transient handle on a freshly written file (antivirus, indexer) makes the
+    directory rename fail with PermissionError on Windows; the checkpoint itself is
+    complete and hashed, so the rename is retried rather than the checkpoint dropped."""
+
+    def _save(self, manager: CheckpointManager) -> Path:
+        with patch("fedicl_mqa.training.checkpointing._torch", return_value=_FakeTorch):
+            return manager.save(
+                "checkpoint-step-00002750",
+                model=_FakeModel(),
+                optimizer=None,
+                trainer_state=TrainerState(kind="centralized", seed=42),
+            )
+
+    def test_transient_permission_error_is_retried_and_the_checkpoint_survives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary, config_hash="config", model_id="model", model_revision="revision"
+            )
+            real_replace = os.replace
+            failures = {"left": 3}
+            waits: list[float] = []
+
+            def flaky_replace(src, dst):
+                # Only the checkpoint directory rename is denied; atomic file writes
+                # inside it go through untouched, as on a real machine.
+                if Path(src).is_dir() and failures["left"]:
+                    failures["left"] -= 1
+                    raise PermissionError(5, "Access is denied")
+                real_replace(src, dst)
+
+            with (
+                patch("fedicl_mqa.training.checkpointing.os.replace", side_effect=flaky_replace),
+                patch("fedicl_mqa.training.checkpointing.time.sleep", side_effect=waits.append),
+            ):
+                checkpoint = self._save(manager)
+            self.assertTrue((checkpoint / "hashes.json").exists())
+            self.assertEqual(len(waits), 3)
+            self.assertFalse(list(Path(temporary).glob(".checkpoint-*")))
+            manager.verify(checkpoint)
+
+    def test_persistent_permission_error_names_the_likely_cause(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary, config_hash="config", model_id="model", model_revision="revision"
+            )
+            real_replace = os.replace
+
+            def denied_directory_replace(src, dst):
+                if Path(src).is_dir():
+                    raise PermissionError(5, "Access is denied")
+                real_replace(src, dst)
+
+            with (
+                patch(
+                    "fedicl_mqa.training.checkpointing.os.replace",
+                    side_effect=denied_directory_replace,
+                ),
+                patch("fedicl_mqa.training.checkpointing.time.sleep"),
+                self.assertRaisesRegex(PermissionError, "antivirus"),
+            ):
+                self._save(manager)
+            self.assertFalse(list(Path(temporary).glob(".checkpoint-*")))
+
+
 class RelativeRootTests(unittest.TestCase):
     """output_dir in the shipped configs is relative, so root often is too."""
 

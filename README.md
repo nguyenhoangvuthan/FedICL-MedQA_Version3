@@ -438,6 +438,23 @@ If you were running `pipeline`, rerun that original command instead to retain it
 requested arms and remaining stages. Do not edit the sealed batch size to recover.
 `--cuda-debug` helps locate failures but does not reduce memory consumption.
 
+### `PermissionError: [WinError 5]` while saving a checkpoint on Windows
+
+Windows refuses to rename a directory while another process holds a handle on any
+file inside it. Antivirus real-time scanning and the search indexer open a freshly
+written `adapter_model.safetensors` or `optimizer.pt` for a moment, so the final
+rename of a complete, hashed checkpoint can be denied at random. The saver now
+retries the rename for about half a minute with backoff and logs each attempt;
+only if every attempt is denied does it raise. Exclude the `outputs` directory from
+real-time scanning on the training machine (PowerShell as administrator):
+
+```powershell
+Add-MpPreference -ExclusionPath "D:\path\to\FedICL-MedQA\outputs"
+```
+
+Then rerun the same pipeline command; training resumes from the last completed
+checkpoint with `--resume auto`.
+
 ### Recovering from a Windows CUDA abort
 
 If training ends with `Unhandled exception caught in c10/util/AbortHandler.h` and a

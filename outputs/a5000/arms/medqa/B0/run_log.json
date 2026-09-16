@@ -1,0 +1,28 @@
+{
+  "arm": "B0",
+  "config_hash": "4a68acefb0256e74fa3aaba9ff606eeea2b5dc9e06b39d2e85e6be07940e04d1",
+  "dataset": "medqa",
+  "records": [
+    {
+      "accuracy": 0.24587588373919875,
+      "duration_seconds": 1383.9649840998463,
+      "error": null,
+      "recorded_at": "2026-09-07T17:21:00+00:00",
+      "round": null,
+      "seed": null,
+      "split": "test",
+      "status": "completed"
+    },
+    {
+      "accuracy": 0.24587588373919875,
+      "duration_seconds": 0.011096700094640255,
+      "error": null,
+      "recorded_at": "2026-09-08T12:58:19+00:00",
+      "round": null,
+      "seed": null,
+      "split": "test",
+      "status": "skipped"
+    }
+  ],
+  "updated_at": "2026-09-08T12:58:19+00:00"
+}

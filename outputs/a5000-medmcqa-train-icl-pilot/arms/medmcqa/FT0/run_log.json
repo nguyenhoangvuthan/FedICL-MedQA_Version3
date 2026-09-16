@@ -1,0 +1,18 @@
+{
+  "arm": "FT0",
+  "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+  "dataset": "medmcqa",
+  "records": [
+    {
+      "accuracy": 0.3958383161922985,
+      "duration_seconds": 1070.1378836999938,
+      "error": null,
+      "recorded_at": "2026-09-15T10:27:01+00:00",
+      "round": null,
+      "seed": 42,
+      "split": "test",
+      "status": "completed"
+    }
+  ],
+  "updated_at": "2026-09-15T10:27:01+00:00"
+}

@@ -1,0 +1,75 @@
+{
+  "arms": [
+    "F0",
+    "F1",
+    "FT0",
+    "FT1"
+  ],
+  "descriptive": {},
+  "partial": true,
+  "primary": {
+    "fl_eval_icl_after_train_icl": {
+      "ci_high": 0.033723989476201865,
+      "ci_low": 0.007892848600813202,
+      "conditional_likelihood_ci_high": 0.03324563501554652,
+      "conditional_likelihood_ci_low": 0.00765367137048553,
+      "conditional_likelihood_effect": 0.020330064577852188,
+      "effect": 0.020808419038507536,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.0054,
+      "left": "FT0",
+      "p_value": 0.0018,
+      "right": "FT1"
+    },
+    "fl_icl": {
+      "ci_high": -0.0016742406122937097,
+      "ci_low": -0.029179622099976082,
+      "conditional_likelihood_ci_high": 0.00023917723032767282,
+      "conditional_likelihood_ci_low": -0.026309495336044007,
+      "conditional_likelihood_effect": -0.012915570437694332,
+      "effect": -0.01530734274097106,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.058,
+      "left": "F0",
+      "p_value": 0.029,
+      "right": "F1"
+    },
+    "fl_train_icl_eval_k0": {
+      "ci_high": 0.008132025831140876,
+      "ci_low": -0.018177469504903135,
+      "conditional_likelihood_ci_high": 0.00597943075819182,
+      "conditional_likelihood_ci_low": -0.019851710117196844,
+      "conditional_likelihood_effect": -0.006696962449174839,
+      "effect": -0.004783544606553456,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.481,
+      "left": "F0",
+      "p_value": 0.481,
+      "right": "FT0"
+    },
+    "fl_train_icl_eval_k5": {
+      "ci_high": 0.04544367376225783,
+      "ci_low": 0.017220760583592443,
+      "conditional_likelihood_ci_high": 0.040660129155704376,
+      "conditional_likelihood_ci_low": 0.012437215977038986,
+      "conditional_likelihood_effect": 0.02654867256637168,
+      "effect": 0.031332217172925135,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.0,
+      "left": "F1",
+      "p_value": 0.0,
+      "right": "FT1"
+    }
+  },
+  "protocol": {
+    "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+    "prediction_sha256": {
+      "F0/seed-42": "6352b965dcc40b9a9f96677bc5cd189013f4856224fd7a8e1066f9a7a4689791",
+      "F1/seed-42": "1c8b4e98548cbe9221ef0414db249e8ecea7970eccb914f9c57c22f65826c56f",
+      "FT0/seed-42": "31967a4f41106e5f1375da6522d18c7baf23cebbe40430cdbe9f137cb7c31bef",
+      "FT1/seed-42": "eb272ae155a47dc474ae34087cd6b911fbab9796783ed85706aac25e336c812f"
+    },
+    "selected_round": 8,
+    "test_source": "official MedMCQA validation"
+  }
+}

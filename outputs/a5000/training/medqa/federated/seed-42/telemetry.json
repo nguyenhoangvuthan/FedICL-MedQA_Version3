@@ -1,0 +1,9 @@
+{
+  "checkpoint_root": "D:\\phungthan\\V1_FedICL_MedQA\\FedICL-MedQA-V1\\outputs\\a5000\\training\\medqa\\federated\\seed-42\\global",
+  "effective_batch_size": 16,
+  "total_downlink_bytes": 1614807040,
+  "total_optimizer_updates": 3584,
+  "total_target_exposures": 56984,
+  "total_uplink_bytes": 1614807040,
+  "total_wall_clock_seconds": 63551.4599224
+}

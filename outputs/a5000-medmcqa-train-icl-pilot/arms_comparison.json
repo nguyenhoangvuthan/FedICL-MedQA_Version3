@@ -1,0 +1,476 @@
+{
+  "arms": {
+    "F0": {
+      "mean": {
+        "conditional_likelihood_accuracy": 0.4025352786414733,
+        "ece": 0.05342628340121235,
+        "exact_match_coverage": 1.0,
+        "pipeline_accuracy": 0.4006218607988519,
+        "position_macro_f1": 0.39367762877825263,
+        "semantic_fallback_rate": 0.0
+      },
+      "runs": 1,
+      "seeds": {
+        "seed-42": {
+          "arm": "F0",
+          "client_accuracy": {
+            "0": 0.3898858075040783,
+            "1": 0.3591549295774648,
+            "2": 0.41017488076311603,
+            "3": 0.4200913242009132,
+            "4": 0.4102976669348351
+          },
+          "conditional_likelihood_accuracy": 0.4025352786414733,
+          "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+          "ece": 0.05342628340121235,
+          "evaluator_disagreement_rate": 0.0466395599138962,
+          "exact_match_coverage": 1.0,
+          "gold_position_distribution": {
+            "0": 1346,
+            "1": 1085,
+            "2": 925,
+            "3": 825
+          },
+          "hardware": {
+            "device": "NVIDIA RTX A5000",
+            "memory_allocated_bytes": 1382972416.0,
+            "memory_reserved_bytes": 7763656704.0,
+            "memory_total_bytes": 25756696576.0,
+            "peak_memory_allocated_bytes": 6846483456.0
+          },
+          "items_per_second": 3.9324079782436447,
+          "macro_client_accuracy": 0.39792092179608146,
+          "n": 4181,
+          "pipeline_accuracy": 0.4006218607988519,
+          "pipeline_likelihood_agreement": 0.9533604400861038,
+          "pipeline_likelihood_correctness_matrix": {
+            "both_correct": 1625,
+            "both_incorrect": 2448,
+            "likelihood_only_correct": 58,
+            "pipeline_only_correct": 50
+          },
+          "position_macro_f1": 0.39367762877825263,
+          "predicted_position_distribution": {
+            "0": 1303,
+            "1": 1060,
+            "2": 1014,
+            "3": 804
+          },
+          "predictions_sha256": "6352b965dcc40b9a9f96677bc5cd189013f4856224fd7a8e1066f9a7a4689791",
+          "prompt_tokens_max": 292,
+          "prompt_tokens_p50": 112.0,
+          "prompt_tokens_p95": 158.0,
+          "reranking_activity": {
+            "changed_by_prior": 0,
+            "changed_from_top5": 0,
+            "queries": 0,
+            "varying_candidate_prior": 0
+          },
+          "retrieval_health": {
+            "retrieval_queries": 0
+          },
+          "run_metadata": {
+            "selected_round": 8,
+            "training_plan_sha256": "73c3cd7cbb07ece8145d7167a2bfd4fe6add8c1af514f963b4e62e60b14dc6e9"
+          },
+          "seed": 42,
+          "semantic_fallback_rate": 0.0,
+          "split": "test",
+          "subject_accuracy": {
+            "Anaesthesia": 0.23529411764705882,
+            "Anatomy": 0.37606837606837606,
+            "Biochemistry": 0.4444444444444444,
+            "Dental": 0.40819423368740515,
+            "ENT": 0.39622641509433965,
+            "Forensic Medicine": 0.373134328358209,
+            "Gynaecology & Obstetrics": 0.4107142857142857,
+            "Medicine": 0.39322033898305087,
+            "Microbiology": 0.36065573770491804,
+            "Ophthalmology": 0.3275862068965517,
+            "Orthopaedics": 0.25,
+            "Pathology": 0.42136498516320475,
+            "Pediatrics": 0.38461538461538464,
+            "Pharmacology": 0.4403292181069959,
+            "Physiology": 0.40350877192982454,
+            "Psychiatry": 0.4375,
+            "Radiology": 0.391304347826087,
+            "Skin": 0.29411764705882354,
+            "Social & Preventive Medicine": 0.4186046511627907,
+            "Surgery": 0.38482384823848237
+          },
+          "unresolved_rate": 0.0,
+          "wall_clock_seconds": 1063.21623369999,
+          "worst_client_accuracy": 0.3591549295774648
+        }
+      },
+      "std": {
+        "conditional_likelihood_accuracy": 0.0,
+        "ece": 0.0,
+        "exact_match_coverage": 0.0,
+        "pipeline_accuracy": 0.0,
+        "position_macro_f1": 0.0,
+        "semantic_fallback_rate": 0.0
+      }
+    },
+    "F1": {
+      "mean": {
+        "conditional_likelihood_accuracy": 0.389619708203779,
+        "ece": 0.04080414601673611,
+        "exact_match_coverage": 1.0,
+        "pipeline_accuracy": 0.3853145180578809,
+        "position_macro_f1": 0.37992514934751104,
+        "semantic_fallback_rate": 0.0
+      },
+      "runs": 1,
+      "seeds": {
+        "seed-42": {
+          "arm": "F1",
+          "client_accuracy": {
+            "0": 0.3890701468189233,
+            "1": 0.3732394366197183,
+            "2": 0.37201907790143085,
+            "3": 0.4063926940639269,
+            "4": 0.3813354786806114
+          },
+          "conditional_likelihood_accuracy": 0.389619708203779,
+          "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+          "ece": 0.04080414601673611,
+          "evaluator_disagreement_rate": 0.06936139679502511,
+          "exact_match_coverage": 1.0,
+          "gold_position_distribution": {
+            "0": 1346,
+            "1": 1085,
+            "2": 925,
+            "3": 825
+          },
+          "hardware": {
+            "device": "NVIDIA RTX A5000",
+            "memory_allocated_bytes": 1384807424.0,
+            "memory_reserved_bytes": 27648851968.0,
+            "memory_total_bytes": 25756696576.0,
+            "peak_memory_allocated_bytes": 6846483456.0
+          },
+          "items_per_second": 2.964647130447099,
+          "macro_client_accuracy": 0.3844113668169221,
+          "n": 4181,
+          "pipeline_accuracy": 0.3853145180578809,
+          "pipeline_likelihood_agreement": 0.9306386032049749,
+          "pipeline_likelihood_correctness_matrix": {
+            "both_correct": 1540,
+            "both_incorrect": 2481,
+            "likelihood_only_correct": 89,
+            "pipeline_only_correct": 71
+          },
+          "position_macro_f1": 0.37992514934751104,
+          "predicted_position_distribution": {
+            "0": 1224,
+            "1": 1076,
+            "2": 1037,
+            "3": 844
+          },
+          "predictions_sha256": "1c8b4e98548cbe9221ef0414db249e8ecea7970eccb914f9c57c22f65826c56f",
+          "prompt_tokens_max": 1021,
+          "prompt_tokens_p50": 439.0,
+          "prompt_tokens_p95": 621.0,
+          "reranking_activity": {
+            "changed_by_prior": 0,
+            "changed_from_top5": 0,
+            "queries": 0,
+            "varying_candidate_prior": 0
+          },
+          "retrieval_health": {
+            "capacity_failures": 0,
+            "exclusions": {
+              "semantic_near_duplicate": 21
+            },
+            "expanded_queries": 0,
+            "expanded_query_rate": 0.0,
+            "retrieval_queries": 4181
+          },
+          "run_metadata": {
+            "selected_round": 8,
+            "training_plan_sha256": "73c3cd7cbb07ece8145d7167a2bfd4fe6add8c1af514f963b4e62e60b14dc6e9"
+          },
+          "seed": 42,
+          "semantic_fallback_rate": 0.0,
+          "split": "test",
+          "subject_accuracy": {
+            "Anaesthesia": 0.3235294117647059,
+            "Anatomy": 0.38461538461538464,
+            "Biochemistry": 0.391812865497076,
+            "Dental": 0.38467374810318666,
+            "ENT": 0.37735849056603776,
+            "Forensic Medicine": 0.3283582089552239,
+            "Gynaecology & Obstetrics": 0.3794642857142857,
+            "Medicine": 0.4067796610169492,
+            "Microbiology": 0.3770491803278688,
+            "Ophthalmology": 0.3620689655172414,
+            "Orthopaedics": 0.35,
+            "Pathology": 0.42729970326409494,
+            "Pediatrics": 0.39316239316239315,
+            "Pharmacology": 0.3950617283950617,
+            "Physiology": 0.38011695906432746,
+            "Psychiatry": 0.3125,
+            "Radiology": 0.3333333333333333,
+            "Skin": 0.35294117647058826,
+            "Social & Preventive Medicine": 0.3875968992248062,
+            "Surgery": 0.36314363143631434
+          },
+          "unresolved_rate": 0.0,
+          "wall_clock_seconds": 1410.285884299985,
+          "worst_client_accuracy": 0.37201907790143085
+        }
+      },
+      "std": {
+        "conditional_likelihood_accuracy": 0.0,
+        "ece": 0.0,
+        "exact_match_coverage": 0.0,
+        "pipeline_accuracy": 0.0,
+        "position_macro_f1": 0.0,
+        "semantic_fallback_rate": 0.0
+      }
+    },
+    "FT0": {
+      "mean": {
+        "conditional_likelihood_accuracy": 0.3958383161922985,
+        "ece": 0.04072131914004444,
+        "exact_match_coverage": 1.0,
+        "pipeline_accuracy": 0.3958383161922985,
+        "position_macro_f1": 0.3903831785193007,
+        "semantic_fallback_rate": 0.0
+      },
+      "runs": 1,
+      "seeds": {
+        "seed-42": {
+          "arm": "FT0",
+          "client_accuracy": {
+            "0": 0.3964110929853181,
+            "1": 0.3779342723004695,
+            "2": 0.4069952305246423,
+            "3": 0.4079147640791476,
+            "4": 0.3893805309734513
+          },
+          "conditional_likelihood_accuracy": 0.3958383161922985,
+          "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+          "ece": 0.04072131914004444,
+          "evaluator_disagreement_rate": 0.04616120545324085,
+          "exact_match_coverage": 1.0,
+          "gold_position_distribution": {
+            "0": 1346,
+            "1": 1085,
+            "2": 925,
+            "3": 825
+          },
+          "hardware": {
+            "device": "NVIDIA RTX A5000",
+            "memory_allocated_bytes": 1384807424.0,
+            "memory_reserved_bytes": 27648851968.0,
+            "memory_total_bytes": 25756696576.0,
+            "peak_memory_allocated_bytes": 6846483456.0
+          },
+          "items_per_second": 3.9433625422230008,
+          "macro_client_accuracy": 0.3957271781726058,
+          "n": 4181,
+          "pipeline_accuracy": 0.3958383161922985,
+          "pipeline_likelihood_agreement": 0.9538387945467591,
+          "pipeline_likelihood_correctness_matrix": {
+            "both_correct": 1595,
+            "both_incorrect": 2466,
+            "likelihood_only_correct": 60,
+            "pipeline_only_correct": 60
+          },
+          "position_macro_f1": 0.3903831785193007,
+          "predicted_position_distribution": {
+            "0": 1244,
+            "1": 1064,
+            "2": 1011,
+            "3": 862
+          },
+          "predictions_sha256": "31967a4f41106e5f1375da6522d18c7baf23cebbe40430cdbe9f137cb7c31bef",
+          "prompt_tokens_max": 292,
+          "prompt_tokens_p50": 112.0,
+          "prompt_tokens_p95": 158.0,
+          "reranking_activity": {
+            "changed_by_prior": 0,
+            "changed_from_top5": 0,
+            "queries": 0,
+            "varying_candidate_prior": 0
+          },
+          "retrieval_health": {
+            "retrieval_queries": 0
+          },
+          "run_metadata": {
+            "selected_round": 8,
+            "training_plan_sha256": "73c3cd7cbb07ece8145d7167a2bfd4fe6add8c1af514f963b4e62e60b14dc6e9"
+          },
+          "seed": 42,
+          "semantic_fallback_rate": 0.0,
+          "split": "test",
+          "subject_accuracy": {
+            "Anaesthesia": 0.23529411764705882,
+            "Anatomy": 0.4017094017094017,
+            "Biochemistry": 0.4327485380116959,
+            "Dental": 0.3922610015174507,
+            "ENT": 0.39622641509433965,
+            "Forensic Medicine": 0.3880597014925373,
+            "Gynaecology & Obstetrics": 0.4107142857142857,
+            "Medicine": 0.3864406779661017,
+            "Microbiology": 0.36885245901639346,
+            "Ophthalmology": 0.39655172413793105,
+            "Orthopaedics": 0.25,
+            "Pathology": 0.4035608308605341,
+            "Pediatrics": 0.36324786324786323,
+            "Pharmacology": 0.4074074074074074,
+            "Physiology": 0.40350877192982454,
+            "Psychiatry": 0.4375,
+            "Radiology": 0.42028985507246375,
+            "Skin": 0.23529411764705882,
+            "Social & Preventive Medicine": 0.4263565891472868,
+            "Surgery": 0.41192411924119243
+          },
+          "unresolved_rate": 0.0,
+          "wall_clock_seconds": 1060.2626452000113,
+          "worst_client_accuracy": 0.3779342723004695
+        }
+      },
+      "std": {
+        "conditional_likelihood_accuracy": 0.0,
+        "ece": 0.0,
+        "exact_match_coverage": 0.0,
+        "pipeline_accuracy": 0.0,
+        "position_macro_f1": 0.0,
+        "semantic_fallback_rate": 0.0
+      }
+    },
+    "FT1": {
+      "mean": {
+        "conditional_likelihood_accuracy": 0.41616838077015067,
+        "ece": 0.06134225754212087,
+        "exact_match_coverage": 1.0,
+        "pipeline_accuracy": 0.41664673523080603,
+        "position_macro_f1": 0.4113487949831687,
+        "semantic_fallback_rate": 0.0
+      },
+      "runs": 1,
+      "seeds": {
+        "seed-42": {
+          "arm": "FT1",
+          "client_accuracy": {
+            "0": 0.39559543230016314,
+            "1": 0.40375586854460094,
+            "2": 0.43243243243243246,
+            "3": 0.441400304414003,
+            "4": 0.42075623491552694
+          },
+          "conditional_likelihood_accuracy": 0.41616838077015067,
+          "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+          "ece": 0.06134225754212087,
+          "evaluator_disagreement_rate": 0.04185601530734274,
+          "exact_match_coverage": 1.0,
+          "gold_position_distribution": {
+            "0": 1346,
+            "1": 1085,
+            "2": 925,
+            "3": 825
+          },
+          "hardware": {
+            "device": "NVIDIA RTX A5000",
+            "memory_allocated_bytes": 1384807424.0,
+            "memory_reserved_bytes": 27648851968.0,
+            "memory_total_bytes": 25756696576.0,
+            "peak_memory_allocated_bytes": 6846483456.0
+          },
+          "items_per_second": 3.0615603010535386,
+          "macro_client_accuracy": 0.41878805452134527,
+          "n": 4181,
+          "pipeline_accuracy": 0.41664673523080603,
+          "pipeline_likelihood_agreement": 0.9581439846926573,
+          "pipeline_likelihood_correctness_matrix": {
+            "both_correct": 1691,
+            "both_incorrect": 2390,
+            "likelihood_only_correct": 49,
+            "pipeline_only_correct": 51
+          },
+          "position_macro_f1": 0.4113487949831687,
+          "predicted_position_distribution": {
+            "0": 1331,
+            "1": 1068,
+            "2": 999,
+            "3": 783
+          },
+          "predictions_sha256": "eb272ae155a47dc474ae34087cd6b911fbab9796783ed85706aac25e336c812f",
+          "prompt_tokens_max": 1021,
+          "prompt_tokens_p50": 439.0,
+          "prompt_tokens_p95": 621.0,
+          "reranking_activity": {
+            "changed_by_prior": 0,
+            "changed_from_top5": 0,
+            "queries": 0,
+            "varying_candidate_prior": 0
+          },
+          "retrieval_health": {
+            "capacity_failures": 0,
+            "exclusions": {
+              "semantic_near_duplicate": 21
+            },
+            "expanded_queries": 0,
+            "expanded_query_rate": 0.0,
+            "retrieval_queries": 4181
+          },
+          "run_metadata": {
+            "selected_round": 8,
+            "training_plan_sha256": "73c3cd7cbb07ece8145d7167a2bfd4fe6add8c1af514f963b4e62e60b14dc6e9"
+          },
+          "seed": 42,
+          "semantic_fallback_rate": 0.0,
+          "split": "test",
+          "subject_accuracy": {
+            "Anaesthesia": 0.2647058823529412,
+            "Anatomy": 0.36752136752136755,
+            "Biochemistry": 0.45614035087719296,
+            "Dental": 0.41047040971168436,
+            "ENT": 0.37735849056603776,
+            "Forensic Medicine": 0.31343283582089554,
+            "Gynaecology & Obstetrics": 0.46875,
+            "Medicine": 0.43728813559322033,
+            "Microbiology": 0.4016393442622951,
+            "Ophthalmology": 0.43103448275862066,
+            "Orthopaedics": 0.25,
+            "Pathology": 0.4421364985163205,
+            "Pediatrics": 0.4230769230769231,
+            "Pharmacology": 0.4567901234567901,
+            "Physiology": 0.43859649122807015,
+            "Psychiatry": 0.5,
+            "Radiology": 0.4492753623188406,
+            "Skin": 0.23529411764705882,
+            "Social & Preventive Medicine": 0.3875968992248062,
+            "Surgery": 0.3983739837398374
+          },
+          "unresolved_rate": 0.0,
+          "wall_clock_seconds": 1365.6435244999884,
+          "worst_client_accuracy": 0.39559543230016314
+        }
+      },
+      "std": {
+        "conditional_likelihood_accuracy": 0.0,
+        "ece": 0.0,
+        "exact_match_coverage": 0.0,
+        "pipeline_accuracy": 0.0,
+        "position_macro_f1": 0.0,
+        "semantic_fallback_rate": 0.0
+      }
+    }
+  },
+  "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+  "dataset": "medmcqa",
+  "metrics": [
+    "pipeline_accuracy",
+    "position_macro_f1",
+    "conditional_likelihood_accuracy",
+    "ece",
+    "exact_match_coverage",
+    "semantic_fallback_rate"
+  ],
+  "split": "test",
+  "updated_at": "2026-09-15T10:49:56+00:00"
+}

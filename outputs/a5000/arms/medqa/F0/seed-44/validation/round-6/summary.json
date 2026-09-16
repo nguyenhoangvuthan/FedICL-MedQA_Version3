@@ -1,0 +1,61 @@
+{
+  "arm": "F0",
+  "client_accuracy": {
+    "0": 0.3489827856025039,
+    "1": 0.3433962264150943,
+    "2": 0.42727272727272725,
+    "3": 0.2916666666666667,
+    "4": 0.36231884057971014
+  },
+  "conditional_likelihood_accuracy": 0.3419811320754717,
+  "config_hash": "4a68acefb0256e74fa3aaba9ff606eeea2b5dc9e06b39d2e85e6be07940e04d1",
+  "ece": 0.030919902635820243,
+  "evaluator_disagreement_rate": 0.05188679245283019,
+  "exact_match_coverage": 1.0,
+  "gold_position_distribution": {
+    "0": 330,
+    "1": 316,
+    "2": 352,
+    "3": 274
+  },
+  "hardware": {
+    "device": "NVIDIA RTX A5000",
+    "memory_allocated_bytes": 1384367104.0,
+    "memory_reserved_bytes": 9382658048.0,
+    "memory_total_bytes": 25756696576.0,
+    "peak_memory_allocated_bytes": 29955807232.0
+  },
+  "items_per_second": 2.3530284931535017,
+  "macro_client_accuracy": 0.35472744930734046,
+  "n": 1272,
+  "pipeline_accuracy": 0.35062893081761004,
+  "pipeline_likelihood_agreement": 0.9481132075471698,
+  "pipeline_likelihood_correctness_matrix": {
+    "both_correct": 424,
+    "both_incorrect": 815,
+    "likelihood_only_correct": 11,
+    "pipeline_only_correct": 22
+  },
+  "position_macro_f1": 0.34879306796420695,
+  "predicted_position_distribution": {
+    "0": 314,
+    "1": 331,
+    "2": 344,
+    "3": 283
+  },
+  "prompt_tokens_max": 703,
+  "prompt_tokens_p50": 260.0,
+  "prompt_tokens_p95": 420.45000000000005,
+  "retrieval_health": {
+    "retrieval_queries": 0
+  },
+  "seed": 44,
+  "semantic_fallback_rate": 0.0,
+  "split": "validation",
+  "subject_accuracy": {
+    "medicine": 0.35062893081761004
+  },
+  "unresolved_rate": 0.0,
+  "wall_clock_seconds": 540.5799392999616,
+  "worst_client_accuracy": 0.2916666666666667
+}

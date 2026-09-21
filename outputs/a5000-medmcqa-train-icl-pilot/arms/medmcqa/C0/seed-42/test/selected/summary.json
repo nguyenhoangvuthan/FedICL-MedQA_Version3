@@ -1,0 +1,91 @@
+{
+  "arm": "C0",
+  "client_accuracy": {
+    "0": 0.33278955954323003,
+    "1": 0.34976525821596244,
+    "2": 0.3799682034976153,
+    "3": 0.3713850837138508,
+    "4": 0.3419147224456959
+  },
+  "conditional_likelihood_accuracy": 0.35063381966036833,
+  "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+  "ece": 0.019983703783327717,
+  "evaluator_disagreement_rate": 0.03922506577373834,
+  "exact_match_coverage": 0.9997608227696724,
+  "gold_position_distribution": {
+    "0": 1346,
+    "1": 1085,
+    "2": 925,
+    "3": 825
+  },
+  "hardware": {
+    "device": "NVIDIA RTX A5000",
+    "memory_allocated_bytes": 1384545280.0,
+    "memory_reserved_bytes": 20694695936.0,
+    "memory_total_bytes": 25756696576.0,
+    "peak_memory_allocated_bytes": 9896395776.0
+  },
+  "items_per_second": 4.068115981722618,
+  "macro_client_accuracy": 0.35516456548327086,
+  "n": 4181,
+  "pipeline_accuracy": 0.35039464243004065,
+  "pipeline_likelihood_agreement": 0.9607749342262617,
+  "pipeline_likelihood_correctness_matrix": {
+    "both_correct": 1417,
+    "both_incorrect": 2667,
+    "likelihood_only_correct": 49,
+    "pipeline_only_correct": 48
+  },
+  "position_macro_f1": 0.3489445045340921,
+  "predicted_position_distribution": {
+    "0": 1071,
+    "1": 1152,
+    "2": 1092,
+    "3": 865
+  },
+  "predictions_sha256": "4b949376a939ba2ce667566683a851993209f9cb00de5578e5dfecea6b1b0d9b",
+  "prompt_tokens_max": 292,
+  "prompt_tokens_p50": 112.0,
+  "prompt_tokens_p95": 158.0,
+  "reranking_activity": {
+    "changed_by_prior": 0,
+    "changed_from_top5": 0,
+    "queries": 0,
+    "varying_candidate_prior": 0
+  },
+  "retrieval_health": {
+    "retrieval_queries": 0
+  },
+  "run_metadata": {
+    "selected_round": 8,
+    "training_plan_sha256": "73c3cd7cbb07ece8145d7167a2bfd4fe6add8c1af514f963b4e62e60b14dc6e9"
+  },
+  "seed": 42,
+  "semantic_fallback_rate": 0.0,
+  "split": "test",
+  "subject_accuracy": {
+    "Anaesthesia": 0.2647058823529412,
+    "Anatomy": 0.358974358974359,
+    "Biochemistry": 0.4269005847953216,
+    "Dental": 0.3300455235204856,
+    "ENT": 0.32075471698113206,
+    "Forensic Medicine": 0.31343283582089554,
+    "Gynaecology & Obstetrics": 0.36607142857142855,
+    "Medicine": 0.3389830508474576,
+    "Microbiology": 0.3360655737704918,
+    "Ophthalmology": 0.3793103448275862,
+    "Orthopaedics": 0.4,
+    "Pathology": 0.41839762611275966,
+    "Pediatrics": 0.3034188034188034,
+    "Pharmacology": 0.411522633744856,
+    "Physiology": 0.38011695906432746,
+    "Psychiatry": 0.3125,
+    "Radiology": 0.37681159420289856,
+    "Skin": 0.35294117647058826,
+    "Social & Preventive Medicine": 0.3643410852713178,
+    "Surgery": 0.3035230352303523
+  },
+  "unresolved_rate": 0.00023917723032767282,
+  "wall_clock_seconds": 1027.7484759000363,
+  "worst_client_accuracy": 0.33278955954323003
+}

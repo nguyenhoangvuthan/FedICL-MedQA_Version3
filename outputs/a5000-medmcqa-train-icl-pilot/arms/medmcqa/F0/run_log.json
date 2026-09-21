@@ -12,7 +12,17 @@
       "seed": 42,
       "split": "test",
       "status": "completed"
+    },
+    {
+      "accuracy": 0.4006218607988519,
+      "duration_seconds": 0.11905440001282841,
+      "error": null,
+      "recorded_at": "2026-09-18T16:43:44+00:00",
+      "round": null,
+      "seed": 42,
+      "split": "test",
+      "status": "skipped"
     }
   ],
-  "updated_at": "2026-09-15T09:45:31+00:00"
+  "updated_at": "2026-09-18T16:43:44+00:00"
 }

@@ -1,0 +1,186 @@
+{
+  "arms": [
+    "C0",
+    "C1",
+    "CT0",
+    "CT1",
+    "F0",
+    "F1",
+    "FT0",
+    "FT1"
+  ],
+  "descriptive": {
+    "central": {
+      "ci_high": -0.033723989476201865,
+      "ci_low": -0.06720880172207606,
+      "effect": -0.05022721836881129,
+      "p_value": 0.0
+    },
+    "central_eval_icl": {
+      "ci_high": -0.04831380052618991,
+      "ci_low": -0.08371203061468548,
+      "effect": -0.06601291557043769,
+      "p_value": 0.0
+    },
+    "central_train_eval_icl": {
+      "ci_high": -0.03587658454915092,
+      "ci_low": -0.06983975125568045,
+      "effect": -0.05285816790241569,
+      "p_value": 0.0
+    },
+    "central_train_icl": {
+      "ci_high": -0.027505381487682373,
+      "ci_low": -0.06314278880650562,
+      "effect": -0.04520449653193016,
+      "p_value": 0.0
+    }
+  },
+  "partial": true,
+  "primary": {
+    "central_eval_icl_after_train_icl": {
+      "ci_high": 0.02391772303276728,
+      "ci_low": 0.0021525950729490554,
+      "conditional_likelihood_ci_high": 0.019134178426213823,
+      "conditional_likelihood_ci_low": -0.0026309495336044007,
+      "conditional_likelihood_effect": 0.008132025831140876,
+      "effect": 0.013154747668022004,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.1212,
+      "left": "CT0",
+      "p_value": 0.0202,
+      "right": "CT1"
+    },
+    "central_icl": {
+      "ci_high": -0.016024874431954078,
+      "ci_low": -0.04616120545324085,
+      "conditional_likelihood_ci_high": -0.0033484812245874193,
+      "conditional_likelihood_ci_low": -0.032049748863908156,
+      "conditional_likelihood_effect": -0.017459937813920114,
+      "effect": -0.031093039942597465,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.0,
+      "left": "C0",
+      "p_value": 0.0,
+      "right": "C1"
+    },
+    "central_system": {
+      "ci_high": 0.030136331021286773,
+      "ci_low": -0.0028701267639320736,
+      "conditional_likelihood_ci_high": 0.03157139440325281,
+      "conditional_likelihood_ci_low": -0.0016742406122937097,
+      "conditional_likelihood_effect": 0.015068165510643387,
+      "effect": 0.013393924898349677,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.3414,
+      "left": "C0",
+      "p_value": 0.1138,
+      "right": "CT1"
+    },
+    "central_train_icl_eval_k0": {
+      "ci_high": 0.01698158335326477,
+      "ci_low": -0.016742406122937096,
+      "conditional_likelihood_ci_high": 0.023439368572111936,
+      "conditional_likelihood_ci_low": -0.009806266443434585,
+      "conditional_likelihood_effect": 0.006936139679502512,
+      "effect": 0.00023917723032767282,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.9826,
+      "left": "C0",
+      "p_value": 0.9826,
+      "right": "CT0"
+    },
+    "central_train_icl_eval_k5": {
+      "ci_high": 0.0624252571155226,
+      "ci_low": 0.02702702702702703,
+      "conditional_likelihood_ci_high": 0.050466395599138965,
+      "conditional_likelihood_ci_low": 0.015546519971298732,
+      "conditional_likelihood_effect": 0.032528103324563504,
+      "effect": 0.04448696484094714,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.0,
+      "left": "C1",
+      "p_value": 0.0,
+      "right": "CT1"
+    },
+    "fl_eval_icl_after_train_icl": {
+      "ci_high": 0.033723989476201865,
+      "ci_low": 0.007892848600813202,
+      "conditional_likelihood_ci_high": 0.03324563501554652,
+      "conditional_likelihood_ci_low": 0.00765367137048553,
+      "conditional_likelihood_effect": 0.020330064577852188,
+      "effect": 0.020808419038507536,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.0126,
+      "left": "FT0",
+      "p_value": 0.0018,
+      "right": "FT1"
+    },
+    "fl_icl": {
+      "ci_high": -0.0016742406122937097,
+      "ci_low": -0.029179622099976082,
+      "conditional_likelihood_ci_high": 0.00023917723032767282,
+      "conditional_likelihood_ci_low": -0.026309495336044007,
+      "conditional_likelihood_effect": -0.012915570437694332,
+      "effect": -0.01530734274097106,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.135,
+      "left": "F0",
+      "p_value": 0.029,
+      "right": "F1"
+    },
+    "fl_system": {
+      "ci_high": 0.0298971537909591,
+      "ci_low": 0.0019134178426213825,
+      "conditional_likelihood_ci_high": 0.027505381487682373,
+      "conditional_likelihood_ci_low": -0.00023917723032767282,
+      "conditional_likelihood_effect": 0.01363310212867735,
+      "effect": 0.016024874431954078,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.135,
+      "left": "F0",
+      "p_value": 0.027,
+      "right": "FT1"
+    },
+    "fl_train_icl_eval_k0": {
+      "ci_high": 0.008132025831140876,
+      "ci_low": -0.018177469504903135,
+      "conditional_likelihood_ci_high": 0.00597943075819182,
+      "conditional_likelihood_ci_low": -0.019851710117196844,
+      "conditional_likelihood_effect": -0.006696962449174839,
+      "effect": -0.004783544606553456,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.962,
+      "left": "F0",
+      "p_value": 0.481,
+      "right": "FT0"
+    },
+    "fl_train_icl_eval_k5": {
+      "ci_high": 0.04544367376225783,
+      "ci_low": 0.017220760583592443,
+      "conditional_likelihood_ci_high": 0.040660129155704376,
+      "conditional_likelihood_ci_low": 0.012437215977038986,
+      "conditional_likelihood_effect": 0.02654867256637168,
+      "effect": 0.031332217172925135,
+      "evaluator_dependent": false,
+      "holm_adjusted_p_value": 0.0,
+      "left": "F1",
+      "p_value": 0.0,
+      "right": "FT1"
+    }
+  },
+  "protocol": {
+    "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+    "prediction_sha256": {
+      "C0/seed-42": "4b949376a939ba2ce667566683a851993209f9cb00de5578e5dfecea6b1b0d9b",
+      "C1/seed-42": "6af9ed1d5ea99eef6c0790dea6903cc428f00d79a4981583f3c2f70850d2490f",
+      "CT0/seed-42": "1420942cbac4388ab37b7b139cdc48ce2798634b21789e6e973202580ff1e5d2",
+      "CT1/seed-42": "6cc5007485efd8d1cfeff159a9fa304b9fd354c9e44c261444baacbc7d7c0641",
+      "F0/seed-42": "6352b965dcc40b9a9f96677bc5cd189013f4856224fd7a8e1066f9a7a4689791",
+      "F1/seed-42": "1c8b4e98548cbe9221ef0414db249e8ecea7970eccb914f9c57c22f65826c56f",
+      "FT0/seed-42": "31967a4f41106e5f1375da6522d18c7baf23cebbe40430cdbe9f137cb7c31bef",
+      "FT1/seed-42": "eb272ae155a47dc474ae34087cd6b911fbab9796783ed85706aac25e336c812f"
+    },
+    "selected_round": 8,
+    "test_source": "official MedMCQA validation"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "device": "NVIDIA RTX A5000",
+  "effective_batch_size": 16.0,
+  "examples_per_second": 2.0059214179134974,
+  "forward_micro_batch_size": 1.0,
+  "memory_allocated_bytes": 1330465280.0,
+  "memory_reserved_bytes": 19195232256.0,
+  "memory_total_bytes": 25756696576.0,
+  "peak_memory_allocated_bytes": 9896395776.0,
+  "run_examples_per_second": 2.0059214179134974,
+  "run_optimizer_updates": 9800.0,
+  "run_target_exposures": 156696.0,
+  "run_wall_clock_seconds": 78116.71912999998,
+  "total_examples_per_second": 2.0059214179134974,
+  "total_optimizer_updates": 9800.0,
+  "total_target_exposures": 156696.0,
+  "total_wall_clock_seconds": 78116.71912999998,
+  "training_exemplars_per_target": 5,
+  "wall_clock_seconds": 78116.71912999998
+}

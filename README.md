@@ -76,6 +76,11 @@ The code implements:
 - paired item/seed bootstrap and Holm correction for the six primary contrasts;
 - atomic, hash-verified and resumable checkpoints.
 
+To choose an earlier adapter from **existing server checkpoints without training**,
+use [`validate-checkpoints --mode all`](docs/validate-existing-checkpoints.md).
+It scores the saved Local, Federated and Centralized adapters on validation data;
+`evaluate --checkpoint best-validation` then evaluates the chosen adapter separately.
+
 Security/DP components in the paper plan are not implemented here and therefore must not be
 reported as validated privacy guarantees.
 

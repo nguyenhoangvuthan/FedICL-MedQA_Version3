@@ -34,6 +34,7 @@ from fedicl_mqa.modeling.loader import load_lora_bundle
 from fedicl_mqa.training.checkpointing import CheckpointManager
 from fedicl_mqa.training.context import bind_protocol, load_plan, training_inputs
 from fedicl_mqa.training.federated import adapter_state, set_adapter_state
+from fedicl_mqa.training.validation import epoch_checkpoint, validation_winner
 
 
 def _load_arm_checkpoint(
@@ -41,6 +42,10 @@ def _load_arm_checkpoint(
     arm: str,
     seed: int | None,
     round_index: int | None,
+    *,
+    best_validation: bool = False,
+    epoch: int | None = None,
+    selection_metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, Any]:
     if arm not in active_arms(config):
         raise ValueError(f"arm {arm} is not enabled by this configuration")
@@ -49,6 +54,7 @@ def _load_arm_checkpoint(
     bundle = load_lora_bundle(config, seed=runtime_seed)
     initial = adapter_state(bundle.model)
     spec = ARMS[arm]
+    custom_selection = best_validation or epoch is not None
 
     def manager(root: Path, *, keep: int | None = None) -> CheckpointManager:
         return CheckpointManager(
@@ -58,6 +64,21 @@ def _load_arm_checkpoint(
             model_revision=config.model.revision,
             keep=keep,
         )
+
+    def selected_reference(checkpoints: CheckpointManager, key: str) -> str:
+        local = key.startswith("client-")
+        identity = {
+            "expected_kind": f"{spec.checkpoint_family}-{key}" if local else spec.checkpoint_family,
+            "expected_seed": seed * 1_000 + int(key.split("-")[1]) if local else seed,
+        }
+        reference, metadata = (
+            epoch_checkpoint(checkpoints, epoch, **identity)
+            if epoch is not None
+            else validation_winner(checkpoints, **identity)
+        )
+        if selection_metadata is not None:
+            selection_metadata[key] = metadata
+        return reference
 
     if spec.checkpoint_family == "base":
 
@@ -83,10 +104,15 @@ def _load_arm_checkpoint(
             bind_protocol(
                 config, root.parent, plan, train_icl=spec.checkpoint_family == "local-icl"
             )
-            loaded = manager(root, keep=config.training.checkpoint_keep).load(
-                "last", model=model, restore_rng=False
+            checkpoints = manager(root, keep=config.training.checkpoint_keep)
+            loaded = checkpoints.load(
+                selected_reference(checkpoints, f"client-{client_id}")
+                if custom_selection
+                else "last",
+                model=model,
+                restore_rng=False,
             )
-            if partition is not None:
+            if partition is not None and not custom_selection:
                 state = loaded.trainer_state
                 epochs = rounds * config.training.local_epochs
                 if (
@@ -98,15 +124,20 @@ def _load_arm_checkpoint(
 
         return bundle, before_client
     if spec.checkpoint_family in {"federated", "federated-icl"}:
-        selected = round_index or selected_round(config)
+        selected = (round_index or selected_round(config)) if not custom_selection else None
         root = checkpoint_root(config, spec.checkpoint_family) / f"seed-{seed}" / "global"
         bind_protocol(
             config, root.parent, plan, train_icl=spec.checkpoint_family == "federated-icl"
         )
-        loaded = manager(root).load(
-            f"checkpoint-round-{selected:04d}", model=bundle.model, restore_rng=False
+        checkpoints = manager(root)
+        loaded = checkpoints.load(
+            selected_reference(checkpoints, "global")
+            if custom_selection
+            else f"checkpoint-round-{selected:04d}",
+            model=bundle.model,
+            restore_rng=False,
         )
-        if config.controls is not None:
+        if config.controls is not None and not custom_selection:
             partition = _training_partition(config)
             exposures = sum(len(v["fit"]) for v in partition.values()) * selected
             if (
@@ -117,10 +148,13 @@ def _load_arm_checkpoint(
         return bundle, None
     root = checkpoint_root(config, spec.checkpoint_family) / f"seed-{seed}"
     bind_protocol(config, root, plan, train_icl=spec.checkpoint_family == "centralized-icl")
-    loaded = manager(root, keep=config.training.checkpoint_keep).load(
-        "last", model=bundle.model, restore_rng=False
+    checkpoints = manager(root, keep=config.training.checkpoint_keep)
+    loaded = checkpoints.load(
+        selected_reference(checkpoints, "pooled") if custom_selection else "last",
+        model=bundle.model,
+        restore_rng=False,
     )
-    if config.controls is not None:
+    if config.controls is not None and not custom_selection:
         epochs = selected_round(config) * config.training.local_epochs
         partition = _training_partition(config)
         exposures = sum(len(v["fit"]) for v in partition.values()) * epochs
@@ -156,7 +190,21 @@ def _run_single_evaluation(
     split: str,
     round_index: int | None,
     subject_weights: str | None = None,
+    best_validation: bool = False,
+    epoch: int | None = None,
 ) -> dict[str, Any]:
+    if epoch is not None and (epoch < 1 or best_validation):
+        raise ValueError("epoch must be positive and cannot be combined with best-validation")
+    custom_selection = best_validation or epoch is not None
+    if custom_selection and (
+        ARMS[arm].checkpoint_family == "base"
+        or ARMS[arm].client_aware
+        or round_index is not None
+        or subject_weights is not None
+    ):
+        raise ValueError(
+            "checkpoint selection requires a trained arm without round override or prior"
+        )
     clients = load_partition(data_root(config), expected_config_hash=config.hash)
     prior_path = subject_weights
     if config.controls is not None and subject_weights is not None:
@@ -167,7 +215,7 @@ def _run_single_evaluation(
     metadata: dict[str, Any] = {}
     if config.icl_training is not None:
         metadata["training_plan_sha256"] = load_plan(config)["sha256"]
-    if config.controls is not None:
+    if config.controls is not None and not custom_selection:
         metadata["selected_round"] = round_index or selected_round(config)
         if prior_path:
             audit = verified_prior_metadata(
@@ -175,14 +223,32 @@ def _run_single_evaluation(
             )
             metadata["prior_sha256"] = audit["prior_sha256"]
     priors = read_priors(prior_path) if prior_path else None
-    bundle, before_client = _load_arm_checkpoint(config, arm, seed, round_index)
+    if custom_selection:
+        metadata["checkpoint_selection"] = (
+            f"epoch-{epoch}" if epoch is not None else "best-validation"
+        )
+        metadata["selected_checkpoints"] = {}
+        bundle, before_client = _load_arm_checkpoint(
+            config,
+            arm,
+            seed,
+            round_index,
+            best_validation=best_validation,
+            **({"epoch": epoch} if epoch is not None else {}),
+            selection_metadata=metadata["selected_checkpoints"],
+        )
+    else:
+        bundle, before_client = _load_arm_checkpoint(config, arm, seed, round_index)
+    output = evaluation_dir(config, arm, seed=seed, split=split, round_index=round_index)
+    if custom_selection:
+        output = output.parent / metadata["checkpoint_selection"]
     return evaluate_arm(
         bundle,
         config,
         clients,
         arm=arm,
         split=split,
-        output_dir=evaluation_dir(config, arm, seed=seed, split=split, round_index=round_index),
+        output_dir=output,
         seed=seed,
         before_client=before_client,
         subject_weights=priors,
@@ -300,6 +366,12 @@ def command_evaluate(args: argparse.Namespace) -> None:
         split=args.split,
         round_index=args.round,
         subject_weights=args.subject_weights,
+        **({"epoch": args.epoch} if getattr(args, "epoch", None) is not None else {}),
+        **(
+            {"best_validation": True}
+            if getattr(args, "checkpoint", "protocol") == "best-validation"
+            else {}
+        ),
     )
     print(f"{arm} {args.split} pipeline accuracy: {summary['pipeline_accuracy']:.6f}")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+from fedicl_mqa.cli.commands.checkpoint_validation import command_validate_checkpoints
 from fedicl_mqa.cli.commands.data import (
     command_audit_retrieval,
     command_audit_training_icl,
@@ -94,6 +95,32 @@ def build_parser() -> argparse.ArgumentParser:
     training.add_argument("--resume", default="auto")
     training.set_defaults(func=command_train)
 
+    validation = subparsers.add_parser(
+        "validate-checkpoints",
+        parents=[gpu],
+        help="validate existing adapters and select the best without training",
+    )
+    validation.add_argument("--config", required=True)
+    validation.add_argument(
+        "--mode",
+        required=True,
+        choices=[
+            "all",
+            "local",
+            "local-matched",
+            "federated",
+            "centralized",
+            "local-icl",
+            "federated-icl",
+            "centralized-icl",
+        ],
+    )
+    validation_seeds = validation.add_mutually_exclusive_group(required=True)
+    validation_seeds.add_argument("--seed", type=int)
+    validation_seeds.add_argument("--all-seeds", action="store_true")
+    validation.add_argument("--fl-round", type=int, choices=[4, 6, 8])
+    validation.set_defaults(func=command_validate_checkpoints)
+
     evaluate = subparsers.add_parser("evaluate", parents=[gpu], help="run one baseline arm")
     evaluate.add_argument("--config", required=True)
     evaluate.add_argument("--arm", choices=sorted(ARMS), required=True)
@@ -101,6 +128,18 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--split", choices=["validation", "test"], default="test")
     evaluate.add_argument("--round", type=int, choices=[4, 6, 8])
     evaluate.add_argument("--subject-weights")
+    checkpoint_choice = evaluate.add_mutually_exclusive_group()
+    checkpoint_choice.add_argument(
+        "--checkpoint",
+        choices=["protocol", "best-validation"],
+        default="protocol",
+        help="use the saved validation winner; writes separate best-validation results",
+    )
+    checkpoint_choice.add_argument(
+        "--epoch",
+        type=int,
+        help="evaluate the saved adapter at the end of this epoch (FL: cumulative local epochs)",
+    )
     evaluate.set_defaults(func=command_evaluate)
 
     select = subparsers.add_parser(

@@ -91,7 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     seed_group = training.add_mutually_exclusive_group(required=True)
     seed_group.add_argument("--seed", type=int)
     seed_group.add_argument("--all-seeds", action="store_true")
-    training.add_argument("--fl-round", type=int, choices=[4, 6, 8])
+    # Centralized also accepts 1: a single-epoch run is the smallest matched budget
+    # against FL round 1, used to ask whether the federated lead survives before
+    # either family has had the epochs to overfit. Local-matched still rejects it,
+    # in train_local_clients, so the sealed protocol stays on the selected round.
+    training.add_argument("--fl-round", type=int, choices=[1, 4, 6, 8])
     training.add_argument("--resume", default="auto")
     training.set_defaults(func=command_train)
 

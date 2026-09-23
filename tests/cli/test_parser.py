@@ -33,5 +33,41 @@ class ParserTests(unittest.TestCase):
             parser.build_parser().parse_args(["evaluate-all", "--config", "c.yaml", "--gpu", "2"])
 
 
+class SingleEpochBudgetTests(unittest.TestCase):
+    """--fl-round 1 is a centralized-only diagnostic budget, not a protocol change."""
+
+    def test_train_accepts_one_epoch(self) -> None:
+        args = parser.build_parser().parse_args(
+            ["train", "--config", "c.json", "--mode", "centralized", "--seed", "42",
+             "--fl-round", "1"]
+        )
+        self.assertEqual(args.fl_round, 1)
+
+    def test_validate_checkpoints_still_rejects_one(self) -> None:
+        with self.assertRaises(SystemExit):
+            parser.build_parser().parse_args(
+                ["validate-checkpoints", "--config", "c.json", "--mode", "local-matched",
+                 "--seed", "42", "--fl-round", "1"]
+            )
+
+    def test_matched_local_still_rejects_an_off_protocol_budget(self) -> None:
+        from fedicl_mqa.training.workflows import train_local_clients
+
+        with self.assertRaisesRegex(ValueError, "valid selected FL round"):
+            train_local_clients(
+                _config_with_candidates(), {}, seed=42, output_root=".", fl_rounds=1
+            )
+
+
+def _config_with_candidates():
+    class _Training:
+        fl_round_candidates = [4, 6, 8]
+
+    class _Config:
+        training = _Training()
+
+    return _Config()
+
+
 if __name__ == "__main__":
     unittest.main()

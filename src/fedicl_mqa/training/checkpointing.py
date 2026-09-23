@@ -350,13 +350,22 @@ class CheckpointManager:
             raise ValueError(f"invalid checkpoint name: {name!r}")
 
     def _prune(self, *, protected: set[str | None]) -> None:
+        """Bound step checkpoints only; end-of-epoch and end-of-round adapters stay.
+
+        Retention must not decide which epochs exist: selecting a checkpoint on
+        validation reads one adapter per epoch (or per FL round), and a run that
+        saves every 250 steps writes several step checkpoints per epoch, so a small
+        keep would leave nothing but the tail of the final epoch. Step checkpoints
+        exist to resume a crashed run, where the most recent few are enough, so they
+        are the only candidates considered here.
+        """
         if self.keep is None or self.keep <= 0:
             return
         checkpoints = sorted(
             [
                 path
                 for path in self.root.iterdir()
-                if path.is_dir() and path.name.startswith("checkpoint-")
+                if path.is_dir() and path.name.startswith("checkpoint-step-")
             ],
             key=lambda path: path.stat().st_mtime,
             reverse=True,

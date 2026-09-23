@@ -346,3 +346,83 @@ class MissingCheckpointMessageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetentionTests(unittest.TestCase):
+    """checkpoint_keep bounds step checkpoints only; end-of-epoch adapters are kept.
+
+    Selecting a checkpoint on validation needs every epoch of the run on disk, and
+    step checkpoints (save_every_steps) otherwise crowd them out: a centralized run
+    with 1225 updates per epoch writes ~4.9 step checkpoints per epoch, so a keep of
+    3 leaves nothing but the tail of the final epoch.
+    """
+
+    def _save(self, manager: CheckpointManager, name: str, step: int) -> None:
+        with patch("fedicl_mqa.training.checkpointing._torch", return_value=_FakeTorch):
+            manager.save(
+                name,
+                model=_FakeModel(),
+                optimizer=None,
+                trainer_state=TrainerState(kind="centralized", seed=42, global_step=step),
+            )
+
+    def _names(self, manager: CheckpointManager) -> set[str]:
+        return {
+            path.name for path in manager.root.iterdir()
+            if path.is_dir() and path.name.startswith("checkpoint-")
+        }
+
+    def test_epoch_checkpoints_survive_a_long_run_of_step_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary,
+                config_hash="config",
+                model_id="model",
+                model_revision="revision",
+                keep=3,
+            )
+            for epoch in range(1, 5):
+                for offset in range(1, 5):
+                    step = (epoch - 1) * 1225 + offset * 250
+                    self._save(manager, f"checkpoint-step-{step:08d}", step)
+                step = epoch * 1225
+                self._save(manager, f"checkpoint-epoch-{epoch:04d}-step-{step:08d}", step)
+
+            names = self._names(manager)
+            self.assertEqual(
+                {name for name in names if name.startswith("checkpoint-epoch-")},
+                {
+                    "checkpoint-epoch-0001-step-00001225",
+                    "checkpoint-epoch-0002-step-00002450",
+                    "checkpoint-epoch-0003-step-00003675",
+                    "checkpoint-epoch-0004-step-00004900",
+                },
+            )
+            self.assertLessEqual(
+                len({name for name in names if name.startswith("checkpoint-step-")}), 3
+            )
+
+    def test_step_checkpoints_are_still_bounded_by_keep(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary,
+                config_hash="config",
+                model_id="model",
+                model_revision="revision",
+                keep=2,
+            )
+            for step in (250, 500, 750, 1000):
+                self._save(manager, f"checkpoint-step-{step:08d}", step)
+            self.assertEqual(
+                self._names(manager),
+                {"checkpoint-step-00000750", "checkpoint-step-00001000"},
+            )
+
+    def test_keep_none_retains_everything(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            manager = CheckpointManager(
+                temporary, config_hash="config", model_id="model", model_revision="revision"
+            )
+            for step in (250, 500, 750):
+                self._save(manager, f"checkpoint-step-{step:08d}", step)
+            self.assertEqual(len(self._names(manager)), 3)

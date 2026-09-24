@@ -1,0 +1,100 @@
+{
+  "arm": "C0",
+  "client_accuracy": {
+    "0": 0.35073409461663946,
+    "1": 0.3544600938967136,
+    "2": 0.3481717011128776,
+    "3": 0.3622526636225266,
+    "4": 0.3813354786806114
+  },
+  "conditional_likelihood_accuracy": 0.36713704855297774,
+  "config_hash": "e7a772c3ec7af6dc5825f310e5f16a1ef457757976f75d96064c8d4a0390d879",
+  "ece": 0.0794436554465674,
+  "evaluator_disagreement_rate": 0.12389380530973451,
+  "exact_match_coverage": 1.0,
+  "gold_position_distribution": {
+    "0": 1346,
+    "1": 1085,
+    "2": 925,
+    "3": 825
+  },
+  "hardware": {
+    "device": "NVIDIA RTX A5000",
+    "memory_allocated_bytes": 1374977024.0,
+    "memory_reserved_bytes": 7782531072.0,
+    "memory_total_bytes": 25756696576.0,
+    "peak_memory_allocated_bytes": 2180886016.0
+  },
+  "items_per_second": 3.420732090543267,
+  "macro_client_accuracy": 0.35939080638587373,
+  "n": 4181,
+  "pipeline_accuracy": 0.3616359722554413,
+  "pipeline_likelihood_agreement": 0.8761061946902655,
+  "pipeline_likelihood_correctness_matrix": {
+    "both_correct": 1377,
+    "both_incorrect": 2511,
+    "likelihood_only_correct": 158,
+    "pipeline_only_correct": 135
+  },
+  "position_macro_f1": 0.3422158796569843,
+  "predicted_position_distribution": {
+    "0": 1777,
+    "1": 1062,
+    "2": 691,
+    "3": 651
+  },
+  "predictions_sha256": "75a262d06d4f79d91eef0def8e58fa144d75592074dc800fa53a09035d620e61",
+  "prompt_tokens_max": 292,
+  "prompt_tokens_p50": 112.0,
+  "prompt_tokens_p95": 158.0,
+  "reranking_activity": {
+    "changed_by_prior": 0,
+    "changed_from_top5": 0,
+    "queries": 0,
+    "varying_candidate_prior": 0
+  },
+  "retrieval_health": {
+    "retrieval_queries": 0
+  },
+  "run_metadata": {
+    "checkpoint_selection": "epoch-1",
+    "selected_checkpoints": {
+      "pooled": {
+        "checkpoint": "checkpoint-epoch-0001-step-00001225",
+        "checkpoint_sha256": "8ea4c97245a95b222b6a1bfbe7790575684c4284b1ffe0073e54c22bbaaec67c",
+        "epoch": 1,
+        "global_step": 1225,
+        "round": 0
+      }
+    },
+    "training_plan_sha256": "73c3cd7cbb07ece8145d7167a2bfd4fe6add8c1af514f963b4e62e60b14dc6e9"
+  },
+  "seed": 42,
+  "semantic_fallback_rate": 0.0,
+  "split": "test",
+  "subject_accuracy": {
+    "Anaesthesia": 0.2647058823529412,
+    "Anatomy": 0.36752136752136755,
+    "Biochemistry": 0.4269005847953216,
+    "Dental": 0.3626707132018209,
+    "ENT": 0.5471698113207547,
+    "Forensic Medicine": 0.34328358208955223,
+    "Gynaecology & Obstetrics": 0.3705357142857143,
+    "Medicine": 0.3389830508474576,
+    "Microbiology": 0.30327868852459017,
+    "Ophthalmology": 0.22413793103448276,
+    "Orthopaedics": 0.25,
+    "Pathology": 0.37388724035608306,
+    "Pediatrics": 0.358974358974359,
+    "Pharmacology": 0.39094650205761317,
+    "Physiology": 0.3508771929824561,
+    "Psychiatry": 0.4375,
+    "Radiology": 0.34782608695652173,
+    "Skin": 0.17647058823529413,
+    "Social & Preventive Medicine": 0.3333333333333333,
+    "Surgery": 0.36314363143631434
+  },
+  "unresolved_rate": 0.0,
+  "wall_clock_seconds": 1222.2529825000092,
+  "worst_client_accuracy": 0.3481717011128776
+}
